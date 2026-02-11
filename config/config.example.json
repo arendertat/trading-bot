@@ -1,0 +1,114 @@
+{
+  "mode": "PAPER_LIVE",
+  "timezone": "UTC",
+  "exchange": {
+    "name": "binance",
+    "api_key_env": "BINANCE_API_KEY",
+    "api_secret_env": "BINANCE_API_SECRET",
+    "usdtm_perp": true,
+    "margin_mode": "ISOLATED",
+    "recv_window_ms": 5000
+  },
+  "universe": {
+    "min_24h_volume_usdt": 100000000,
+    "max_spread_pct": 0.0005,
+    "max_abs_funding_rate": 0.0015,
+    "min_atr_ratio": 0.005,
+    "max_monitored_symbols": 6,
+    "whitelist": [],
+    "blacklist": [],
+    "hedge_max_combined_funding": 0.0015
+  },
+  "timeframes": {
+    "signal_tf": "5m",
+    "trend_tf": "1h",
+    "zscore_lookback": 100,
+    "corr_tf": "1h",
+    "corr_lookback_hours": 72
+  },
+  "risk": {
+    "risk_per_trade_pct": 0.01,
+    "max_total_open_risk_pct": 0.025,
+    "max_open_positions": 2,
+    "max_same_direction_positions": 2,
+    "correlation_threshold": 0.85,
+    "hedge_corr_max": 0.6,
+    "daily_stop_pct": -0.04,
+    "weekly_stop_pct": -0.1,
+    "pause_days_after_weekly_stop": 7,
+    "reduced_risk_after_pause_pct": 0.005,
+    "reduced_risk_days": 3
+  },
+  "regime": {
+    "trend_adx_min": 25,
+    "range_adx_max": 20,
+    "high_vol_atr_z": 1.5,
+    "confidence_threshold": 0.55,
+    "bb_width_range_min": 0.01,
+    "bb_width_range_max": 0.05
+  },
+  "strategies": {
+    "trend_pullback": {
+      "enabled": true,
+      "stop_pct": 0.01,
+      "target_r_multiple": 1.5,
+      "pullback_rsi_long_min": 40,
+      "pullback_rsi_long_max": 50,
+      "pullback_rsi_short_min": 50,
+      "pullback_rsi_short_max": 60,
+      "ema20_band_pct": 0.002,
+      "trail_after_r": 1.0,
+      "atr_trail_mult": 2.0
+    },
+    "trend_breakout": {
+      "enabled": true,
+      "stop_pct": 0.01,
+      "breakout_lookback_bars": 20,
+      "breakout_volume_z_min": 1.0,
+      "atr_trail_mult": 2.5
+    },
+    "range_mean_reversion": {
+      "enabled": true,
+      "stop_pct": 0.008,
+      "target_r_multiple": 1.2,
+      "rsi_long_extreme": 25,
+      "rsi_short_extreme": 75
+    }
+  },
+  "leverage": {
+    "trend": 2.0,
+    "range": 1.5,
+    "high_vol": 1.0
+  },
+  "execution": {
+    "entry_order_type": "LIMIT",
+    "limit_ttl_seconds": 30,
+    "limit_retry_count": 1,
+    "stop_order_type": "STOP_MARKET",
+    "kill_switch_order_type": "MARKET",
+    "paper_slippage_limit_pct": 0.0002,
+    "paper_slippage_market_pct": 0.0008,
+    "paper_slippage_stop_pct": 0.001,
+    "maker_fee_pct": 0.0002,
+    "taker_fee_pct": 0.0004,
+    "enable_funding_in_paper": false
+  },
+  "performance": {
+    "window_trades": 50,
+    "min_trades_before_confidence": 20,
+    "dd_penalty_weight": 0.5,
+    "max_strategy_switches_per_day": 1
+  },
+  "notifications": {
+    "telegram_enabled": false,
+    "telegram_token_env": "TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id_env": "TELEGRAM_CHAT_ID",
+    "daily_report_time_utc": "00:05"
+  },
+  "logging": {
+    "log_dir": "./logs",
+    "trade_log_file": "trades.jsonl",
+    "event_log_file": "events.jsonl",
+    "log_level": "INFO"
+  }
+}

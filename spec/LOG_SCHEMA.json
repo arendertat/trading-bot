@@ -1,0 +1,47 @@
+{
+  "trade_id": "UUID",
+  "timestamp_open": "ISO8601",
+  "timestamp_close": "ISO8601",
+  "mode": "PAPER_LIVE|LIVE",
+  "symbol": "string",
+  "strategy": "string",
+  "regime": "TREND|RANGE|HIGH_VOL|CHOP_NO_TRADE",
+  "direction": "LONG|SHORT",
+  "confidence_score": "number",
+  "entry_order": {
+    "client_order_id": "string",
+    "type": "LIMIT|MARKET",
+    "requested_price": "number",
+    "filled_avg_price": "number",
+    "filled_qty": "number",
+    "status": "NEW|PARTIALLY_FILLED|FILLED|CANCELED"
+  },
+  "risk": {
+    "equity_usd": "number",
+    "risk_pct": "number",
+    "risk_usd": "number",
+    "stop_pct": "number",
+    "stop_price": "number",
+    "take_profit_price": "number",
+    "leverage": "number",
+    "notional_usd": "number",
+    "margin_used_usd": "number"
+  },
+  "costs": {
+    "fees_usd": "number",
+    "funding_usd": "number",
+    "slippage_pct": "number"
+  },
+  "result": {
+    "exit_price": "number",
+    "pnl_usd": "number",
+    "pnl_r_multiple": "number",
+    "reason": "TP|SL|TRAIL|KILL_SWITCH|MANUAL|TIMEOUT"
+  },
+  "portfolio": {
+    "open_positions_count": "number",
+    "open_risk_pct": "number",
+    "correlation_bucket": "string",
+    "bucket_corr_max": "number"
+  }
+}
