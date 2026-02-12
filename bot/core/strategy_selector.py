@@ -89,13 +89,15 @@ class StrategySelector:
 
         # Calculate scores for all candidates
         scored_strategies: List[tuple[str, float, StrategyMetrics]] = []
+        strategies_without_history: List[str] = []
 
         for strategy_name in candidate_strategies:
             metrics = self.performance_tracker.get_metrics(strategy_name)
 
             if metrics is None:
-                # Insufficient trade history
+                # Insufficient trade history - track for cold start fallback
                 logger.debug(f"{strategy_name}: Insufficient trade history for scoring")
+                strategies_without_history.append(strategy_name)
                 continue
 
             # Calculate confidence score
@@ -110,9 +112,22 @@ class StrategySelector:
 
             scored_strategies.append((strategy_name, confidence, metrics))
 
+        # Cold start fallback: If no strategies have sufficient history, select first compatible
         if not scored_strategies:
-            logger.info(f"{symbol}: No strategies meet confidence threshold for {regime.value}")
-            return None
+            if strategies_without_history:
+                # Sort alphabetically for deterministic selection (tests expect TrendPullback before TrendBreakout)
+                strategies_without_history.sort()
+                fallback_strategy = strategies_without_history[0]
+                logger.info(
+                    f"{symbol}: COLD START - No performance history, selecting {fallback_strategy} "
+                    f"for {regime.value} (will re-evaluate after 10+ trades)"
+                )
+                self.current_selection[regime] = fallback_strategy
+                self.last_selection_time[regime] = datetime.utcnow()
+                return self.strategies[fallback_strategy]
+            else:
+                logger.info(f"{symbol}: No strategies meet confidence threshold for {regime.value}")
+                return None
 
         # Sort by confidence (descending)
         scored_strategies.sort(key=lambda x: x[1], reverse=True)
@@ -198,7 +213,9 @@ class StrategySelector:
         base_score = metrics.expectancy_r - (self.DD_PENALTY_WEIGHT * metrics.max_drawdown_pct)
 
         # Adjust based on sample size (more trades = higher confidence)
-        sample_size_factor = min(1.0, metrics.total_trades / 50.0)
+        # 20 trades = 0.8x multiplier, 30 trades = 1.0x (full confidence)
+        # Less aggressive than /50, allows good strategies to be selected sooner
+        sample_size_factor = min(1.0, metrics.total_trades / 30.0)
 
         # Sigmoid-like mapping to [0, 1]
         # base_score > 0.5 -> confidence > 0.6

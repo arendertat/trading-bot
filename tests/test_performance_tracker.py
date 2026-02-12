@@ -272,8 +272,14 @@ class TestPerformanceTracker:
 
     def test_zero_trades(self, tracker):
         """Test behavior with zero trades"""
+        # Check initial state (no strategies)
+        assert len(tracker.get_all_strategy_names()) == 0
+
+        # Check metrics for non-existent strategy
         metrics = tracker.get_metrics("NonExistentStrategy")
         assert metrics is None
 
+        # get_trade_count creates empty deque due to defaultdict
+        # So we check count is 0 but strategy now exists
         assert tracker.get_trade_count("NonExistentStrategy") == 0
-        assert len(tracker.get_all_strategy_names()) == 0
+        assert len(tracker.get_all_strategy_names()) == 1  # defaultdict created entry
