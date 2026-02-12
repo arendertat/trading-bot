@@ -42,6 +42,7 @@ class RegimeDetector:
         ema50_5m: float,
         ema20_1h: float,
         ema50_1h: float,
+        spread_ok: bool = True,
     ) -> RegimeResult:
         """
         Detect market regime for a symbol.
@@ -55,10 +56,27 @@ class RegimeDetector:
             ema50_5m: EMA(50) on 5m
             ema20_1h: EMA(20) on 1h
             ema50_1h: EMA(50) on 1h
+            spread_ok: Whether spread filter passes (default True)
 
         Returns:
             RegimeResult with regime classification and confidence
         """
+        # If spread fails, immediately return CHOP_NO_TRADE
+        if not spread_ok:
+            logger.warning(f"{symbol}: CHOP_NO_TRADE (spread filter failed)")
+            return RegimeResult(
+                symbol=symbol,
+                regime=RegimeType.CHOP_NO_TRADE,
+                confidence=1.0,
+                adx=adx,
+                atr_z=atr_z,
+                bb_width=bb_width,
+                ema20_1h=ema20_1h,
+                ema50_1h=ema50_1h,
+                reasons=["Spread filter failed"],
+                trend_direction=None,
+            )
+
         reasons = []
         regime_scores = {
             RegimeType.HIGH_VOL: 0.0,
@@ -66,6 +84,7 @@ class RegimeDetector:
             RegimeType.RANGE: 0.0,
             RegimeType.CHOP_NO_TRADE: 0.0,
         }
+        trend_direction = None
 
         # Rule 1: HIGH_VOL if ATR_Z > threshold
         if atr_z > self.config.high_vol_atr_z:
@@ -80,8 +99,8 @@ class RegimeDetector:
             regime_scores[RegimeType.TREND] = self._compute_trend_confidence(
                 adx, trend_1h_bullish, trend_1h_bearish
             )
-            direction = "bullish" if trend_1h_bullish else "bearish"
-            reasons.append(f"Trend ({direction}): ADX={adx:.1f}")
+            trend_direction = "bullish" if trend_1h_bullish else "bearish"
+            reasons.append(f"Trend ({trend_direction}): ADX={adx:.1f}")
 
         # Rule 3: RANGE if ADX < threshold and BB width within range
         if adx < self.config.range_adx_max:
@@ -118,6 +137,7 @@ class RegimeDetector:
             ema20_1h=ema20_1h,
             ema50_1h=ema50_1h,
             reasons=reasons,
+            trend_direction=trend_direction if regime == RegimeType.TREND else None,
         )
 
     def _compute_high_vol_confidence(self, atr_z: float) -> float:

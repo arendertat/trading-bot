@@ -1,6 +1,7 @@
 """Data models for regime detection"""
 
 from dataclasses import dataclass
+from typing import Optional
 from bot.core.constants import RegimeType
 
 
@@ -16,6 +17,7 @@ class RegimeResult:
     ema20_1h: float
     ema50_1h: float
     reasons: list[str]
+    trend_direction: Optional[str] = None  # "bullish" or "bearish" if TREND
 
     def __post_init__(self):
         """Ensure confidence is clamped to [0, 1]"""

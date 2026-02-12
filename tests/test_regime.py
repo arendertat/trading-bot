@@ -124,3 +124,53 @@ class TestRegimeDetection:
         )
 
         assert result.confidence == 1.0
+
+    def test_spread_filter_fail_forces_chop(self, detector):
+        """Test CHOP_NO_TRADE when spread filter fails"""
+        result = detector.detect_regime(
+            symbol="BTC/USDT",
+            adx=30.0,
+            atr_z=1.0,
+            bb_width=0.03,
+            ema20_5m=50100.0,
+            ema50_5m=50000.0,
+            ema20_1h=50200.0,
+            ema50_1h=50000.0,
+            spread_ok=False,  # Bad spread
+        )
+
+        assert result.regime == RegimeType.CHOP_NO_TRADE
+        assert result.confidence == 1.0
+        assert "Spread filter failed" in result.reasons
+
+    def test_trend_direction_bullish(self, detector):
+        """Test trend direction is correctly identified as bullish"""
+        result = detector.detect_regime(
+            symbol="BTC/USDT",
+            adx=30.0,
+            atr_z=1.0,
+            bb_width=0.03,
+            ema20_5m=50100.0,
+            ema50_5m=50000.0,
+            ema20_1h=50200.0,  # Bullish: EMA20 > EMA50
+            ema50_1h=50000.0,
+        )
+
+        assert result.regime == RegimeType.TREND
+        assert result.trend_direction == "bullish"
+
+    def test_trend_direction_bearish(self, detector):
+        """Test trend direction is correctly identified as bearish"""
+        result = detector.detect_regime(
+            symbol="BTC/USDT",
+            adx=30.0,
+            atr_z=1.0,
+            bb_width=0.03,
+            ema20_5m=50100.0,
+            ema50_5m=50000.0,
+            ema20_1h=49800.0,  # Bearish: EMA20 < EMA50
+            ema50_1h=50000.0,
+        )
+
+        assert result.regime == RegimeType.TREND
+        assert result.trend_direction == "bearish"
