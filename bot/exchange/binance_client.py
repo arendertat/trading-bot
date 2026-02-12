@@ -550,3 +550,86 @@ class BinanceFuturesClient:
             return result if isinstance(result, list) else [result]
 
         return self._retry_with_backoff(_cancel_all)
+
+    def list_usdtm_perp_symbols(self) -> List[str]:
+        """
+        List all available USDT-M perpetual symbols.
+
+        Returns:
+            List of symbol names (e.g., ["BTC/USDT", "ETH/USDT"])
+        """
+        def _list():
+            markets = self.exchange.load_markets()
+            # Filter for USDT-M perpetuals
+            symbols = [
+                symbol for symbol, market in markets.items()
+                if market.get('type') == 'future'
+                and market.get('linear') is True
+                and market.get('settle') == 'USDT'
+                and market.get('active') is True
+            ]
+            logger.info(f"Found {len(symbols)} USDT-M perpetual symbols")
+            return symbols
+
+        return self._retry_with_backoff(_list)
+
+    def fetch_24h_tickers(self, symbols: Optional[List[str]] = None) -> Dict[str, Dict]:
+        """
+        Fetch 24h ticker data for symbols.
+
+        Args:
+            symbols: List of symbols (None = all)
+
+        Returns:
+            Dict mapping symbol -> {quote_volume_usdt, bid, ask, ...}
+        """
+        def _fetch():
+            if symbols:
+                # Fetch tickers for specific symbols
+                tickers = {}
+                for symbol in symbols:
+                    ticker = self.exchange.fetch_ticker(symbol)
+                    tickers[symbol] = {
+                        'quote_volume_usdt': float(ticker.get('quoteVolume', 0)),
+                        'bid': float(ticker.get('bid', 0)) if ticker.get('bid') else None,
+                        'ask': float(ticker.get('ask', 0)) if ticker.get('ask') else None,
+                        'last': float(ticker.get('last', 0)),
+                    }
+                return tickers
+            else:
+                # Fetch all tickers at once
+                all_tickers = self.exchange.fetch_tickers()
+                return {
+                    symbol: {
+                        'quote_volume_usdt': float(ticker.get('quoteVolume', 0)),
+                        'bid': float(ticker.get('bid', 0)) if ticker.get('bid') else None,
+                        'ask': float(ticker.get('ask', 0)) if ticker.get('ask') else None,
+                        'last': float(ticker.get('last', 0)),
+                    }
+                    for symbol, ticker in all_tickers.items()
+                }
+
+        return self._retry_with_backoff(_fetch)
+
+    def fetch_funding_rates(self, symbols: List[str]) -> Dict[str, float]:
+        """
+        Fetch current funding rates for multiple symbols.
+
+        Args:
+            symbols: List of symbols
+
+        Returns:
+            Dict mapping symbol -> funding_rate
+        """
+        def _fetch():
+            rates = {}
+            for symbol in symbols:
+                try:
+                    funding = self.exchange.fetch_funding_rate(symbol)
+                    rates[symbol] = float(funding['fundingRate'])
+                except Exception as e:
+                    logger.warning(f"Failed to fetch funding rate for {symbol}: {e}")
+                    rates[symbol] = 0.0
+            return rates
+
+        return self._retry_with_backoff(_fetch)
