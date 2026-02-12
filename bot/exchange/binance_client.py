@@ -107,11 +107,11 @@ class BinanceFuturesClient:
 
     def get_server_time_ms(self) -> int:
         """Get Binance server time in milliseconds"""
-        try:
-            response = self.exchange.fetch_time()
-            return int(response)
-        except Exception as e:
-            raise ExchangeError(f"Failed to fetch server time: {e}")
+        def _fetch():
+            return self.exchange.fetch_time()
+
+        response = self._retry_with_backoff(_fetch)
+        return int(response)
 
     def sync_time(self) -> None:
         """

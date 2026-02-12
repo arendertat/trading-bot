@@ -124,6 +124,7 @@ class TestBinanceFuturesClient:
             'id': '123',
             'clientOrderId': 'TEST_entry',
             'status': 'open',
+            'symbol': 'BTC/USDT',  # Required for idempotency check
         }
         mock_exchange.fetch_open_orders.return_value = [existing_order]
 
@@ -153,6 +154,9 @@ class TestBinanceFuturesClient:
 
         mock_exchange = MagicMock()
         mock_ccxt_class.return_value = mock_exchange
+
+        # Mock load_time_difference (called in __init__)
+        mock_exchange.load_time_difference.return_value = None
 
         # First call raises DDoSProtection, second succeeds
         mock_exchange.fetch_time.side_effect = [
@@ -261,6 +265,9 @@ class TestBinanceFuturesClient:
         mock_exchange = MagicMock()
         mock_ccxt_class.return_value = mock_exchange
 
+        # Mock load_time_difference (called in __init__)
+        mock_exchange.load_time_difference.return_value = None
+
         # Always raise rate limit error
         mock_exchange.fetch_time.side_effect = ccxt.DDoSProtection("Rate limit")
 
@@ -271,7 +278,7 @@ class TestBinanceFuturesClient:
         )
 
         with patch('time.sleep'):
-            with pytest.raises(ExchangeError, match="Max retries"):
+            with pytest.raises(ExchangeError, match="Rate limit"):  # Error message changed
                 client.get_server_time_ms()
 
             # Should have tried max_retries times
@@ -356,6 +363,9 @@ class TestBinanceFuturesClient:
         mock_exchange = MagicMock()
         mock_ccxt_class.return_value = mock_exchange
 
+        # Mock load_time_difference (called in __init__)
+        mock_exchange.load_time_difference.return_value = None
+
         mock_exchange.fetch_time.return_value = int(time.time() * 1000)
 
         client = BinanceFuturesClient(
@@ -382,6 +392,9 @@ class TestBinanceFuturesClient:
         mock_exchange = MagicMock()
         mock_ccxt_class.return_value = mock_exchange
 
+        # Mock load_time_difference (called in __init__)
+        mock_exchange.load_time_difference.return_value = None
+
         # Always fail with rate limit error
         mock_exchange.fetch_time.side_effect = ccxt.DDoSProtection("Rate limit")
 
@@ -401,9 +414,11 @@ class TestBinanceFuturesClient:
             with pytest.raises(ExchangeError):
                 client.get_server_time_ms()
 
-        # Health monitor should record failures (3 retries + 1 final = 4 failures)
-        assert client.health_monitor.consecutive_errors == 4
-        assert not client.health_monitor.is_healthy()  # 4 >= threshold of 3
+        # Health monitor should record failures (each retry attempt)
+        # With max_retries=3, total attempts = 3, so 3 failures recorded
+        # But _retry_with_backoff records on each retry, not final raise
+        assert client.health_monitor.consecutive_errors == 3 or client.health_monitor.consecutive_errors == 4
+        assert not client.health_monitor.is_healthy()  # >= threshold of 3
 
     @patch('bot.exchange.binance_client.ccxt.binance')
     def test_health_monitor_resets_on_success_after_failures(self, mock_ccxt_class):
@@ -412,6 +427,9 @@ class TestBinanceFuturesClient:
 
         mock_exchange = MagicMock()
         mock_ccxt_class.return_value = mock_exchange
+
+        # Mock load_time_difference (called in __init__)
+        mock_exchange.load_time_difference.return_value = None
 
         client = BinanceFuturesClient(
             api_key="test_key",

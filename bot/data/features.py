@@ -47,9 +47,28 @@ def rsi(series: pd.Series, period: int = 14) -> Optional[pd.Series]:
     avg_gains = gains.ewm(span=period, adjust=False).mean()
     avg_losses = losses.ewm(span=period, adjust=False).mean()
 
+    # Handle edge cases:
+    # 1. Flat series (avg_gains = 0 AND avg_losses = 0): RSI is undefined (NaN)
+    # 2. Only gains (avg_losses = 0, avg_gains > 0): RSI = 100
+    # 3. Only losses (avg_gains = 0, avg_losses > 0): RSI = 0
+    # 4. Normal case: RSI = 100 - (100 / (1 + RS))
+
     # Avoid division by zero
-    rs = avg_gains / avg_losses.replace(0, np.nan)
+    rs = pd.Series(index=series.index, dtype=float)
+
+    for idx in avg_gains.index:
+        if avg_losses[idx] == 0 or avg_losses[idx] == -0.0:
+            if avg_gains[idx] == 0:
+                rs[idx] = np.nan  # Flat: undefined
+            else:
+                rs[idx] = np.inf  # Only gains: RSI = 100
+        else:
+            rs[idx] = avg_gains[idx] / avg_losses[idx]
+
     rsi_values = 100 - (100 / (1 + rs))
+
+    # Handle inf (RSI = 100) and NaN (flat series)
+    rsi_values = rsi_values.replace([np.inf, -np.inf], 100)
 
     return rsi_values
 
