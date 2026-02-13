@@ -62,18 +62,27 @@ class BinanceFuturesClient:
         self.health_monitor = HealthMonitor(error_threshold=health_error_threshold)
 
         # Initialize ccxt client
-        self.exchange = ccxt.binance({
+        TESTNET_FAPI = 'https://demo-fapi.binance.com'
+        exchange_config = {
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
-            'options': {
-                'defaultType': 'future',  # USDT-M futures
-                'recvWindow': recv_window_ms,
-            }
-        })
-
+            'options': {'recvWindow': recv_window_ms},
+        }
         if testnet:
-            self.exchange.set_sandbox_mode(True)
+            # ccxt sandbox mode deprecated for Binance Futures;
+            # override URLs directly to testnet.binancefuture.com
+            exchange_config['urls'] = {
+                'api': {
+                    'fapiPublic': f'{TESTNET_FAPI}/fapi/v1',
+                    'fapiPublicV2': f'{TESTNET_FAPI}/fapi/v2',
+                    'fapiPublicV3': f'{TESTNET_FAPI}/fapi/v3',
+                    'fapiPrivate': f'{TESTNET_FAPI}/fapi/v1',
+                    'fapiPrivateV2': f'{TESTNET_FAPI}/fapi/v2',
+                    'fapiPrivateV3': f'{TESTNET_FAPI}/fapi/v3',
+                }
+            }
+        self.exchange = ccxt.binanceusdm(exchange_config)
 
         # Initialize time synchronization
         try:
@@ -316,13 +325,22 @@ class BinanceFuturesClient:
             Dict with keys: total, free, used
         """
         def _fetch():
-            balance = self.exchange.fetch_balance({'type': 'future'})
-            usdt_balance = balance.get('USDT', {})
-            return {
-                'total': float(usdt_balance.get('total', 0)),
-                'free': float(usdt_balance.get('free', 0)),
-                'used': float(usdt_balance.get('used', 0)),
-            }
+            if self.testnet:
+                # Demo/testnet: use fapiPrivateV2 balance endpoint directly
+                # to avoid ccxt routing to spot sapi endpoint first
+                response = self.exchange.fapiPrivateV2GetBalance()
+                usdt = next((a for a in response if a.get('asset') == 'USDT'), {})
+                total = float(usdt.get('balance', 0))
+                free = float(usdt.get('availableBalance', 0))
+                return {'total': total, 'free': free, 'used': total - free}
+            else:
+                balance = self.exchange.fetch_balance({'type': 'future'})
+                usdt_balance = balance.get('USDT', {})
+                return {
+                    'total': float(usdt_balance.get('total', 0)),
+                    'free': float(usdt_balance.get('free', 0)),
+                    'used': float(usdt_balance.get('used', 0)),
+                }
 
         return self._retry_with_backoff(_fetch)
 

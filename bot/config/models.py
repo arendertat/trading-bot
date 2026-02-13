@@ -14,6 +14,7 @@ class ExchangeConfig(BaseModel):
     usdtm_perp: bool = True
     margin_mode: str = "ISOLATED"
     recv_window_ms: int = Field(default=5000, gt=0, le=60000)
+    testnet: bool = False  # Use Binance Futures Testnet (https://testnet.binancefuture.com)
 
     @field_validator("margin_mode")
     @classmethod
