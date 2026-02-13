@@ -478,11 +478,12 @@ class OrderManager:
             return retry_order
 
         else:
-            # No retries left
+            # No retries left — order is already CANCELED; just return it
             logger.warning(
                 f"Order {order.client_order_id} expired with no retries remaining"
             )
-            order = self.lifecycle.mark_expired(order)
+            # mark_expired is only valid from OPEN state; cancel_order above already
+            # moved the order to CANCELED, so we skip the redundant transition.
             return order
 
     def get_order(self, client_order_id: str) -> Optional[Order]:
@@ -556,70 +557,50 @@ class OrderManager:
 
     def _place_with_retry(self, order: Order, reduce_only: bool = False) -> Order:
         """
-        Place LIMIT order with retry logic.
+        Place LIMIT order with retry logic for exchange API failures.
+
+        Retries only on exchange communication errors (connection failures,
+        rate limits, etc.). TTL management is handled externally via
+        process_ttl_expiry(), which is called by the scheduler loop.
 
         Args:
             order: Order to place
             reduce_only: Reduce-only flag
 
         Returns:
-            Updated order
+            Updated order (OPEN state on success)
 
         Raises:
             Exception: If all retries fail
         """
-        max_retries = self.config.limit_retry_count + 1  # Initial + retries
+        max_attempts = self.config.limit_retry_count + 1  # Initial + retries
         last_error = None
 
-        for attempt in range(max_retries):
+        for attempt in range(max_attempts):
             try:
                 order = self._place_single_limit_order(order, reduce_only=reduce_only)
-
-                # Wait for TTL
-                time.sleep(self.config.limit_ttl_seconds)
-
-                # Check fill status
-                order = self.check_order_fills(order)
-
-                # If filled, done
-                if order.is_filled or order.is_partially_filled:
-                    return order
-
-                # If still open, cancel and retry
-                if order.is_open:
-                    logger.info(
-                        f"Order {order.client_order_id} not filled after TTL. "
-                        f"Attempt {attempt + 1}/{max_retries}"
-                    )
-                    self.cancel_order(order, reason="TTL expired - not filled")
-
-                    # If more retries available, continue
-                    if attempt < max_retries - 1:
-                        order.retry_count += 1
-                        continue
-                    else:
-                        # No more retries
-                        order = self.lifecycle.mark_expired(order)
-                        return order
-
-                # Other terminal state
+                # Successfully placed — return OPEN order.
+                # TTL expiry & fill checking are handled by the scheduler
+                # (process_ttl_expiry / check_order_fills).
                 return order
 
             except Exception as e:
                 last_error = e
                 logger.error(
-                    f"Attempt {attempt + 1}/{max_retries} failed for {order.client_order_id}: {e}"
+                    f"Attempt {attempt + 1}/{max_attempts} failed for "
+                    f"{order.client_order_id}: {e}"
                 )
 
-                if attempt < max_retries - 1:
+                if attempt < max_attempts - 1:
                     time.sleep(1)  # Brief pause before retry
-                    continue
                 else:
                     break
 
-        # All retries exhausted
-        self.lifecycle.mark_rejected(order, reason=f"All retries failed: {last_error}")
-        raise Exception(f"Failed to place order after {max_retries} attempts: {last_error}")
+        # All attempts exhausted due to exchange errors — mark as rejected
+        terminal_states = {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED}
+        if order.status not in terminal_states:
+            self.lifecycle.mark_rejected(order, reason=f"All retries failed: {last_error}")
+        raise Exception(f"Failed to place order after {max_attempts} attempts: {last_error}")
 
     def _place_single_limit_order(
         self,
@@ -657,8 +638,13 @@ class OrderManager:
         # Update status
         status_str = response.get("status", "").upper()
         if status_str == "NEW":
-            order = self.lifecycle.submit_order(order, order.exchange_order_id)
-            order = self.lifecycle.mark_open(order)
+            # Only transition if order is in NEW state (idempotent guard)
+            if order.status == OrderStatus.NEW:
+                order = self.lifecycle.submit_order(order, order.exchange_order_id)
+                order = self.lifecycle.mark_open(order)
+            elif order.status == OrderStatus.SUBMITTED:
+                order = self.lifecycle.mark_open(order)
+            # Already OPEN or beyond — no transition needed
         elif status_str == "FILLED":
             # Apply fill
             filled_qty = float(response.get("executedQty", 0))

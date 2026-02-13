@@ -30,7 +30,7 @@ class OrderLifecycle:
 
     # Valid state transitions
     VALID_TRANSITIONS: Dict[OrderStatus, set[OrderStatus]] = {
-        OrderStatus.NEW: {OrderStatus.SUBMITTED},
+        OrderStatus.NEW: {OrderStatus.SUBMITTED, OrderStatus.REJECTED},
         OrderStatus.SUBMITTED: {OrderStatus.OPEN, OrderStatus.REJECTED},
         OrderStatus.OPEN: {
             OrderStatus.FILLED,
