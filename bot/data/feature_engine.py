@@ -94,6 +94,10 @@ class FeatureEngine:
         ema20_1h_series = features.ema(df_1h['close'], period=20)
         ema50_1h_series = features.ema(df_1h['close'], period=50)
 
+        # Rolling 20-bar high/low (for breakout strategy)
+        high_20_series = df_5m['high'].rolling(window=20).max()
+        low_20_series = df_5m['low'].rolling(window=20).min()
+
         # Extract latest values
         try:
             snapshot = {
@@ -105,13 +109,20 @@ class FeatureEngine:
                 "ema20_1h": float(ema20_1h_series.iloc[-1]) if ema20_1h_series is not None else None,
                 "ema50_1h": float(ema50_1h_series.iloc[-1]) if ema50_1h_series is not None else None,
                 "bb_width": float(bb_result[3].iloc[-1]) if bb_result is not None else None,
+                "bb_middle": float(bb_result[0].iloc[-1]) if bb_result is not None else None,
+                "bb_upper": float(bb_result[1].iloc[-1]) if bb_result is not None else None,
+                "bb_lower": float(bb_result[2].iloc[-1]) if bb_result is not None else None,
+                "high_20": float(high_20_series.iloc[-1]),
+                "low_20": float(low_20_series.iloc[-1]),
                 "vol_z": float(vol_z_series.iloc[-1]) if vol_z_series is not None else None,
                 "atr_z": float(atr_z_series.iloc[-1]) if atr_z_series is not None else None,
             }
 
-            # Validate all features are present
-            if any(v is None for v in snapshot.values()):
-                logger.warning(f"Some features are None for {symbol}: {snapshot}")
+            # Validate core features are present (bb_middle/upper/lower/high_20/low_20 optional)
+            optional_keys = {"bb_middle", "bb_upper", "bb_lower", "high_20", "low_20"}
+            core_snapshot = {k: v for k, v in snapshot.items() if k not in optional_keys}
+            if any(v is None for v in core_snapshot.values()):
+                logger.warning(f"Some core features are None for {symbol}: {core_snapshot}")
                 return None
 
             logger.debug(f"Computed features for {symbol}: RSI={snapshot['rsi14']:.2f}, ADX={snapshot['adx14']:.2f}")

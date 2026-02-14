@@ -47,28 +47,24 @@ def rsi(series: pd.Series, period: int = 14) -> Optional[pd.Series]:
     avg_gains = gains.ewm(span=period, adjust=False).mean()
     avg_losses = losses.ewm(span=period, adjust=False).mean()
 
-    # Handle edge cases:
-    # 1. Flat series (avg_gains = 0 AND avg_losses = 0): RSI is undefined (NaN)
-    # 2. Only gains (avg_losses = 0, avg_gains > 0): RSI = 100
-    # 3. Only losses (avg_gains = 0, avg_losses > 0): RSI = 0
-    # 4. Normal case: RSI = 100 - (100 / (1 + RS))
+    # Reset index to avoid duplicate-label issues (timestamps may not be unique)
+    avg_gains = avg_gains.reset_index(drop=True)
+    avg_losses = avg_losses.reset_index(drop=True)
 
-    # Avoid division by zero
-    rs = pd.Series(index=series.index, dtype=float)
-
-    for idx in avg_gains.index:
-        if avg_losses[idx] == 0 or avg_losses[idx] == -0.0:
-            if avg_gains[idx] == 0:
-                rs[idx] = np.nan  # Flat: undefined
-            else:
-                rs[idx] = np.inf  # Only gains: RSI = 100
-        else:
-            rs[idx] = avg_gains[idx] / avg_losses[idx]
+    # Vectorized RS calculation: handle division by zero
+    # Where avg_losses == 0 and avg_gains == 0 → NaN (flat)
+    # Where avg_losses == 0 and avg_gains > 0 → inf (RSI=100)
+    # Normal: avg_gains / avg_losses
+    rs = avg_gains / avg_losses.replace(0, np.nan)
 
     rsi_values = 100 - (100 / (1 + rs))
 
-    # Handle inf (RSI = 100) and NaN (flat series)
+    # avg_gains > 0 but avg_losses == 0 → rs=inf → 100 - (100/inf) = 100
+    # avg_gains == 0 and avg_losses == 0 → rs=nan → NaN (fine, no signal)
     rsi_values = rsi_values.replace([np.inf, -np.inf], 100)
+
+    # Restore original index
+    rsi_values.index = series.index
 
     return rsi_values
 

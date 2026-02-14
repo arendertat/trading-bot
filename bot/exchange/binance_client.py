@@ -62,7 +62,7 @@ class BinanceFuturesClient:
         self.health_monitor = HealthMonitor(error_threshold=health_error_threshold)
 
         # Initialize ccxt client
-        TESTNET_FAPI = 'https://demo-fapi.binance.com'
+        TESTNET_FAPI = 'https://testnet.binancefuture.com'
         exchange_config = {
             'apiKey': api_key,
             'secret': api_secret,
@@ -72,6 +72,8 @@ class BinanceFuturesClient:
         if testnet:
             # ccxt sandbox mode deprecated for Binance Futures;
             # override URLs directly to testnet.binancefuture.com
+            # fetchCurrencies=False: testnet has no sapi endpoint, avoids auth error in load_markets
+            exchange_config['options']['fetchCurrencies'] = False
             exchange_config['urls'] = {
                 'api': {
                     'fapiPublic': f'{TESTNET_FAPI}/fapi/v1',
@@ -581,10 +583,12 @@ class BinanceFuturesClient:
             # Filter for USDT-M perpetuals
             symbols = [
                 symbol for symbol, market in markets.items()
-                if market.get('type') == 'future'
+                if market.get('type') in ('swap', 'future')
                 and market.get('linear') is True
                 and market.get('settle') == 'USDT'
                 and market.get('active') is True
+                and ':' in symbol  # perpetual format BTC/USDT:USDT
+                and '-' not in symbol  # exclude dated futures like BTC/USDT:USDT-260327
             ]
             logger.info(f"Found {len(symbols)} USDT-M perpetual symbols")
             return symbols
@@ -602,30 +606,20 @@ class BinanceFuturesClient:
             Dict mapping symbol -> {quote_volume_usdt, bid, ask, ...}
         """
         def _fetch():
-            if symbols:
-                # Fetch tickers for specific symbols
-                tickers = {}
-                for symbol in symbols:
-                    ticker = self.exchange.fetch_ticker(symbol)
-                    tickers[symbol] = {
-                        'quote_volume_usdt': float(ticker.get('quoteVolume', 0)),
-                        'bid': float(ticker.get('bid', 0)) if ticker.get('bid') else None,
-                        'ask': float(ticker.get('ask', 0)) if ticker.get('ask') else None,
-                        'last': float(ticker.get('last', 0)),
-                    }
-                return tickers
-            else:
-                # Fetch all tickers at once
-                all_tickers = self.exchange.fetch_tickers()
-                return {
-                    symbol: {
-                        'quote_volume_usdt': float(ticker.get('quoteVolume', 0)),
-                        'bid': float(ticker.get('bid', 0)) if ticker.get('bid') else None,
-                        'ask': float(ticker.get('ask', 0)) if ticker.get('ask') else None,
-                        'last': float(ticker.get('last', 0)),
-                    }
-                    for symbol, ticker in all_tickers.items()
+            # Always use batch fetch for performance, then filter
+            all_tickers = self.exchange.fetch_tickers()
+            result = {
+                symbol: {
+                    'quote_volume_usdt': float(ticker.get('quoteVolume', 0)),
+                    'bid': float(ticker.get('bid', 0)) if ticker.get('bid') else None,
+                    'ask': float(ticker.get('ask', 0)) if ticker.get('ask') else None,
+                    'last': float(ticker.get('last', 0)),
                 }
+                for symbol, ticker in all_tickers.items()
+            }
+            if symbols:
+                return {s: result[s] for s in symbols if s in result}
+            return result
 
         return self._retry_with_backoff(_fetch)
 
@@ -640,14 +634,24 @@ class BinanceFuturesClient:
             Dict mapping symbol -> funding_rate
         """
         def _fetch():
-            rates = {}
-            for symbol in symbols:
-                try:
-                    funding = self.exchange.fetch_funding_rate(symbol)
-                    rates[symbol] = float(funding['fundingRate'])
-                except Exception as e:
-                    logger.warning(f"Failed to fetch funding rate for {symbol}: {e}")
-                    rates[symbol] = 0.0
-            return rates
+            # Batch fetch all funding rates, then filter
+            try:
+                all_rates = self.exchange.fetch_funding_rates()
+                return {
+                    symbol: float(all_rates[symbol]['fundingRate'])
+                    if symbol in all_rates else 0.0
+                    for symbol in symbols
+                }
+            except Exception as e:
+                logger.warning(f"Batch funding rate fetch failed, falling back to per-symbol: {e}")
+                rates = {}
+                for symbol in symbols:
+                    try:
+                        funding = self.exchange.fetch_funding_rate(symbol)
+                        rates[symbol] = float(funding['fundingRate'])
+                    except Exception as e2:
+                        logger.warning(f"Failed to fetch funding rate for {symbol}: {e2}")
+                        rates[symbol] = 0.0
+                return rates
 
         return self._retry_with_backoff(_fetch)

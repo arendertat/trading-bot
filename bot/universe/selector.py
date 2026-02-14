@@ -79,13 +79,38 @@ class UniverseSelector:
             logger.warning("No candidate symbols after whitelist/blacklist filter")
             return []
 
-        # Step 3: Fetch market data
+        # Step 3: Fetch market data (batch for performance)
         tickers = self.client.fetch_24h_tickers(candidate_symbols)
         funding_rates = self.client.fetch_funding_rates(candidate_symbols)
 
+        # Step 3b: Pre-filter by volume + funding before expensive ATR warmup
+        # Only warm up candles for symbols that pass the cheap filters
+        pre_filtered = [
+            s for s in candidate_symbols
+            if tickers.get(s, {}).get('quote_volume_usdt', 0) >= self.config.min_24h_volume_usdt
+            and abs(funding_rates.get(s, 0.0)) <= self.config.max_abs_funding_rate
+        ]
+        logger.info(f"Pre-filter (volume+funding): {len(pre_filtered)} / {len(candidate_symbols)} pass")
+
+        # Further limit to top N*4 by volume to keep ATR warmup fast
+        max_for_atr = self.config.max_monitored_symbols * 4
+        if len(pre_filtered) > max_for_atr:
+            pre_filtered.sort(
+                key=lambda s: tickers.get(s, {}).get('quote_volume_usdt', 0),
+                reverse=True
+            )
+            pre_filtered = pre_filtered[:max_for_atr]
+            logger.info(f"Volume-ranked top {max_for_atr} symbols selected for ATR evaluation")
+
+        if not pre_filtered:
+            logger.warning("No symbols passed volume+funding pre-filter")
+            return []
+
         # Step 4: Fetch historical data for ATR calculation (5m, 14 periods)
-        # We need at least 14 candles for ATR(14)
-        self._warmup_candles_for_atr(candidate_symbols)
+        # Only for pre-filtered symbols to avoid fetching 500+ symbols
+        self._warmup_candles_for_atr(pre_filtered)
+
+        candidate_symbols = pre_filtered
 
         # Step 5: Evaluate eligibility for each symbol
         eligibility_results: List[SymbolEligibility] = []
@@ -230,8 +255,9 @@ class UniverseSelector:
                     f"Spread too wide: {spread_pct:.6f} > {self.config.max_spread_pct:.6f}"
                 )
         else:
-            reasons.append("Missing bid/ask data")
-            spread_pct = 1.0  # Assign high spread if missing
+            # Testnet often lacks bid/ask — pass spread check by default
+            spread_pct = 0.0
+            pass_spread = True
 
         # Filter 3: Funding rate
         abs_funding = abs(funding_rate)
