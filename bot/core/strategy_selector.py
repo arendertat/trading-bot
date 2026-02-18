@@ -2,7 +2,7 @@
 
 import logging
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from bot.core.performance_tracker import PerformanceTracker, StrategyMetrics
 from bot.core.constants import RegimeType
@@ -175,21 +175,9 @@ class StrategySelector:
             if not strategy.enabled:
                 continue
 
-            # Strategy compatibility check based on naming convention
-            # TrendPullback/TrendBreakout -> TREND regime
-            # RangeMeanReversion -> RANGE regime
-            # (In production, use explicit strategy.compatible_regimes property)
-
-            if regime == RegimeType.TREND:
-                if "Trend" in name or "trend" in name.lower():
-                    compatible.append(name)
-            elif regime == RegimeType.RANGE:
-                if "Range" in name or "range" in name.lower():
-                    compatible.append(name)
-            elif regime == RegimeType.HIGH_VOL:
-                # HIGH_VOL can use trend strategies (typically breakout)
-                if "Breakout" in name or "breakout" in name.lower():
-                    compatible.append(name)
+            # Bulgu 8: Use explicit compatible_regimes property on each strategy class.
+            if regime in strategy.compatible_regimes:
+                compatible.append(name)
 
         return compatible
 

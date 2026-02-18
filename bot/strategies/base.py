@@ -71,14 +71,20 @@ class Strategy(ABC):
 
     Each strategy must implement:
     - entry_conditions(): Check if entry conditions met
-    - calculate_stop_loss(): Calculate stop price
-    - calculate_take_profit(): Calculate TP price
-    - leverage_mapping(): Return leverage for given regime (optional override)
+    - compatible_regimes: class attribute listing compatible RegimeTypes
 
     The base class provides:
+    - calculate_stop_loss(): Fixed-pct stop (reads "stop_pct" from config)
+    - calculate_take_profit(): Fixed R-multiple TP (reads "target_r_multiple" from config)
     - generate_signal(): Orchestrates signal generation flow
     - Default leverage mapping per regime
+
+    Subclasses may override calculate_stop_loss / calculate_take_profit when
+    they need non-standard logic (e.g. TrendBreakout uses 100R TP).
     """
+
+    # Bulgu 8: Subclasses must declare which regimes they support.
+    compatible_regimes: list = []
 
     def __init__(self, config: dict):
         """
@@ -116,7 +122,6 @@ class Strategy(ABC):
         """
         pass
 
-    @abstractmethod
     def calculate_stop_loss(
         self,
         entry_price: float,
@@ -124,19 +129,16 @@ class Strategy(ABC):
         atr: float
     ) -> float:
         """
-        Calculate stop loss price.
+        Bulgu 6: Default fixed-percentage stop loss.
 
-        Args:
-            entry_price: Entry fill price
-            side: LONG or SHORT
-            atr: Average True Range (14)
-
-        Returns:
-            Stop loss price
+        Reads "stop_pct" from config (default 0.01 = 1%).
+        Subclasses may override for ATR-based or other logic.
         """
-        pass
+        stop_pct = self.config.get("stop_pct", 0.01)
+        if side == OrderSide.LONG:
+            return entry_price * (1 - stop_pct)
+        return entry_price * (1 + stop_pct)
 
-    @abstractmethod
     def calculate_take_profit(
         self,
         entry_price: float,
@@ -144,17 +146,17 @@ class Strategy(ABC):
         side: OrderSide
     ) -> float:
         """
-        Calculate take profit price.
+        Bulgu 6: Default R-multiple take profit.
 
-        Args:
-            entry_price: Entry fill price
-            stop_price: Stop loss price
-            side: LONG or SHORT
-
-        Returns:
-            Take profit price
+        Reads "target_r_multiple" from config (default 2.0).
+        Subclasses may override for trailing-only exits (e.g. 100R sentinel).
         """
-        pass
+        target_r = self.config.get("target_r_multiple", 2.0)
+        risk_distance = abs(entry_price - stop_price)
+        target_distance = risk_distance * target_r
+        if side == OrderSide.LONG:
+            return entry_price + target_distance
+        return entry_price - target_distance
 
     def leverage_mapping(self, regime: RegimeType) -> float:
         """

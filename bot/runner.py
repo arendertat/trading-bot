@@ -31,8 +31,10 @@ import logging
 import os
 import signal
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
+
+import numpy as np
 
 from bot.config.models import BotConfig
 from bot.core.constants import BotMode, RegimeType
@@ -56,6 +58,8 @@ from bot.risk.kill_switch import KillSwitch
 from bot.risk.position_sizing import PositionSizingCalculator
 from bot.risk.risk_engine import RiskEngine
 from bot.risk.risk_limits import RiskLimits
+from bot.execution.trailing_stop import TrailingStopManager
+from bot.state.log_reader import LogReader
 from bot.state.reconciler import Reconciler
 from bot.state.state_manager import StateManager
 from bot.state.logger import TradeLogger
@@ -138,6 +142,9 @@ class BotRunner:
             stability_hours=config.performance.max_strategy_switches_per_day * 24,
         )
 
+        # ── Trailing stop manager ─────────────────────────────────────
+        self._trailing_stop_manager = TrailingStopManager()
+
         # ── Risk engine ───────────────────────────────────────────────
         self._position_sizing = PositionSizingCalculator(config)
         self._risk_limits = RiskLimits(config.risk)
@@ -164,6 +171,7 @@ class BotRunner:
             on_candle_close=self._on_candle_close,
             on_daily_open=self._on_daily_open,
             on_daily_report=self._on_daily_report,
+            on_weekly_reset=self._on_weekly_reset,
         )
 
         # ── Signal handling (Ctrl-C / SIGTERM) ────────────────────────
@@ -186,7 +194,7 @@ class BotRunner:
         self._reconcile()
 
         logger.info("BotRunner: building initial universe …")
-        self._refresh_universe(datetime.utcnow())
+        self._refresh_universe(datetime.now(timezone.utc))
 
         if self._active_symbols:
             logger.info(
@@ -217,8 +225,8 @@ class BotRunner:
     def _reconcile(self) -> None:
         """Rebuild internal state from exchange on startup/restart."""
         if self.config.mode == BotMode.PAPER_LIVE:
-            logger.info("PAPER_LIVE mode: skipping live reconciliation "
-                        "(no real positions to restore)")
+            # Bulgu 5: Paper mode recovery — restore open positions from JSONL trade log
+            self._recover_paper_positions()
             return
 
         try:
@@ -238,6 +246,67 @@ class BotRunner:
                 SafeModeReason.UNEXPECTED_EXCEPTION,
                 f"Startup reconciliation error: {e}",
             )
+
+    def _recover_paper_positions(self) -> None:
+        """
+        Bulgu 5: Restore open paper positions from JSONL trade log after crash.
+
+        Reads today's trade log, finds TRADE_OPENED records that have no
+        corresponding TRADE_CLOSED, and reconstructs ExecPosition objects.
+        """
+        log_dir = self.config.logging.log_dir
+        try:
+            reader = LogReader(log_dir=log_dir)
+            open_trade_payloads = reader.get_opened_trades()
+        except Exception as e:
+            logger.warning(f"PAPER_LIVE: Could not read trade log for recovery: {e}")
+            return
+
+        if not open_trade_payloads:
+            logger.info("PAPER_LIVE: No open positions found in trade log — clean start")
+            return
+
+        restored = 0
+        for payload in open_trade_payloads:
+            try:
+                side = (
+                    ExecOrderSide.LONG
+                    if payload.get("side") == "LONG"
+                    else ExecOrderSide.SHORT
+                )
+                position = ExecPosition(
+                    position_id=payload["position_id"],
+                    symbol=payload["symbol"],
+                    side=side,
+                    entry_price=float(payload["entry_price"]),
+                    quantity=float(payload["quantity"]),
+                    notional_usd=float(payload.get("notional_usd", 0)),
+                    leverage=float(payload.get("leverage", 1)),
+                    margin_usd=float(payload.get("margin_usd", 0)),
+                    stop_price=float(payload["stop_price"]),
+                    tp_price=float(payload["tp_price"]) if payload.get("tp_price") else None,
+                    entry_time=datetime.fromisoformat(payload["entry_time"]) if payload.get("entry_time") else datetime.now(timezone.utc),
+                    risk_amount_usd=float(payload.get("risk_amount_usd", 0)),
+                    initial_stop_price=float(payload.get("initial_stop_price", payload["stop_price"])),
+                    trail_after_r=float(payload.get("trail_after_r", 1.0)),
+                    atr_trail_mult=float(payload.get("atr_trail_mult", 2.0)),
+                    entry_order_id=payload.get("entry_order_id", ""),
+                    stop_order_id=payload.get("stop_order_id", ""),
+                    tp_order_id=payload.get("tp_order_id"),
+                    fees_paid_usd=float(payload.get("fees_paid_usd", 0)),
+                    strategy=payload.get("strategy", ""),
+                    regime=payload.get("regime", ""),
+                )
+                self._state.add_position(position)
+                restored += 1
+                logger.info(
+                    f"PAPER_LIVE recovery: restored {position.position_id} "
+                    f"({position.symbol} {side.value} @ {position.entry_price})"
+                )
+            except Exception as e:
+                logger.warning(f"PAPER_LIVE: Could not restore position {payload.get('position_id')}: {e}")
+
+        logger.info(f"PAPER_LIVE recovery complete: {restored} position(s) restored")
 
     # ------------------------------------------------------------------
     # Scheduled callbacks
@@ -323,6 +392,20 @@ class BotRunner:
         self._refresh_universe(now)
         self._realized_pnl_today = 0.0
         logger.info("Daily PnL counter reset")
+        # Bulgu 2: Update correlation matrix with fresh 1h data
+        self._update_correlation_matrix()
+
+    def _on_weekly_reset(self, now: datetime) -> None:
+        """Monday 00:00 UTC — reset weekly PnL window."""
+        logger.info(
+            f"Weekly reset event: {now.date()} UTC "
+            f"(ISO week {now.isocalendar()[1]})"
+        )
+        self._realized_pnl_week = 0.0
+        logger.info(
+            f"Weekly PnL counter reset. "
+            f"Active positions: {self._state.open_position_count()}"
+        )
 
     def _on_daily_report(self, now: datetime) -> None:
         """00:05 UTC — generate daily summary."""
@@ -340,6 +423,33 @@ class BotRunner:
     # ------------------------------------------------------------------
     # Universe management
     # ------------------------------------------------------------------
+
+    def _update_correlation_matrix(self) -> None:
+        """
+        Bulgu 2: Build 1h price arrays for active symbols and update correlation matrix.
+
+        Requires at least 72 1h candles (~3 days) per symbol.
+        Called daily at 00:00 UTC after universe refresh.
+        """
+        min_bars = self.config.timeframes.corr_lookback_hours
+        price_data: Dict[str, "np.ndarray"] = {}
+
+        for symbol in self._active_symbols:
+            candles_1h = self._candle_store.get_candles(symbol, "1h")
+            if candles_1h and len(candles_1h) >= min_bars:
+                price_data[symbol] = np.array([c.close for c in candles_1h[-min_bars:]])
+
+        if not price_data:
+            logger.debug("Correlation matrix update skipped — insufficient 1h data")
+            return
+
+        try:
+            self._correlation_filter.update_correlation_matrix(price_data)
+            logger.info(
+                f"Correlation matrix updated for {len(price_data)} symbols"
+            )
+        except Exception as e:
+            logger.warning(f"Correlation matrix update failed: {e}")
 
     def _refresh_universe(self, now: datetime) -> None:
         """Rebuild daily universe from exchange data."""
@@ -602,17 +712,38 @@ class BotRunner:
             f"(today: ${self._realized_pnl_today:+.2f})"
         )
 
+        # Bulgu 4: Log closed trade to JSONL
+        try:
+            self._trade_logger.log_trade_closed(position)
+        except Exception as e:
+            logger.warning(f"Trade log write failed: {e}")
+
+        # Bulgu 4: Feed trade into performance tracker for strategy selection
+        if position.strategy:
+            try:
+                self._perf_tracker.add_trade(
+                    strategy=position.strategy,
+                    pnl_r=r_multiple,
+                    pnl_usd=position.realized_pnl_usd,
+                    fees=position.fees_paid_usd,
+                    funding=position.funding_paid_usd,
+                    timestamp=int(position.exit_time.timestamp()) if position.exit_time else 0,
+                )
+            except Exception as e:
+                logger.warning(f"PerformanceTracker update failed: {e}")
+
     # ------------------------------------------------------------------
     # Exit monitoring
     # ------------------------------------------------------------------
 
     def _check_position_exits(self, equity_usd: float) -> None:
         """
-        Paper-mode SL/TP simulation.
+        Paper-mode SL/TP simulation with trailing stop.
 
-        Checks last candle's high/low against stop and TP levels.
-        A SL hit is assumed if candle low (LONG) or candle high (SHORT)
-        breached the stop price.  TP is assumed filled at TP price.
+        For each open position:
+          1. Update trailing stop (Bulgu 1) using current ATR from feature engine
+          2. Check SL hit (candle low for LONG / candle high for SHORT)
+          3. Check TP hit
         """
         open_positions = self._state.get_open_positions()
         for position in open_positions:
@@ -621,15 +752,31 @@ class BotRunner:
                 continue
 
             c = candles[-1]
+            current_price = c.close
 
+            # Bulgu 1: Update trailing stop before checking exits
+            try:
+                features = self._feature_engine.compute_features(position.symbol)
+                if features and features.get("atr14"):
+                    self._trailing_stop_manager.update_trailing_stop(
+                        position=position,
+                        current_price=current_price,
+                        atr=float(features["atr14"]),
+                    )
+            except Exception as e:
+                logger.debug(f"{position.symbol}: trailing stop update failed: {e}")
+
+            # Determine exit reason (TRAIL if trailing stop was triggered)
             if position.side == ExecOrderSide.LONG:
                 if c.low <= position.stop_price:
-                    self._paper_fill_exit(position, position.stop_price, ExitReason.SL)
+                    reason = ExitReason.TRAIL if position.trailing_enabled else ExitReason.SL
+                    self._paper_fill_exit(position, position.stop_price, reason)
                 elif position.tp_price and c.high >= position.tp_price:
                     self._paper_fill_exit(position, position.tp_price, ExitReason.TP)
             else:  # SHORT
                 if c.high >= position.stop_price:
-                    self._paper_fill_exit(position, position.stop_price, ExitReason.SL)
+                    reason = ExitReason.TRAIL if position.trailing_enabled else ExitReason.SL
+                    self._paper_fill_exit(position, position.stop_price, reason)
                 elif position.tp_price and c.low <= position.tp_price:
                     self._paper_fill_exit(position, position.tp_price, ExitReason.TP)
 

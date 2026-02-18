@@ -23,8 +23,11 @@ class TrendBreakoutStrategy(Strategy):
     Take Profit: Very far (100R) - relies on trailing stop for exit
     Trailing: Enabled immediately, 2.5 * ATR distance
 
-    Regime: Only trades in TREND regime
+    Regime: Only trades in TREND and HIGH_VOL regimes
     """
+
+    # Bulgu 8: Explicit regime compatibility
+    compatible_regimes = [RegimeType.TREND, RegimeType.HIGH_VOL]
 
     def entry_conditions(
         self,
@@ -90,31 +93,7 @@ class TrendBreakoutStrategy(Strategy):
 
         return False, None, "Breakout conditions not met"
 
-    def calculate_stop_loss(
-        self,
-        entry_price: float,
-        side: OrderSide,
-        atr: float
-    ) -> float:
-        """
-        Calculate stop loss at fixed percentage.
-
-        Args:
-            entry_price: Entry fill price
-            side: LONG or SHORT
-            atr: Average True Range (not used for fixed stop)
-
-        Returns:
-            Stop loss price
-        """
-        stop_pct = self.config.get("stop_pct", 0.01)  # 1.0%
-
-        if side == OrderSide.LONG:
-            stop_price = entry_price * (1 - stop_pct)
-        else:  # SHORT
-            stop_price = entry_price * (1 + stop_pct)
-
-        return stop_price
+    # Bulgu 6: calculate_stop_loss uses base class default (reads "stop_pct" from config).
 
     def calculate_take_profit(
         self,

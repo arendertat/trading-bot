@@ -26,6 +26,9 @@ class RangeMeanReversionStrategy(Strategy):
     Regime: Only trades in RANGE regime
     """
 
+    # Bulgu 8: Explicit regime compatibility
+    compatible_regimes = [RegimeType.RANGE]
+
     def entry_conditions(
         self,
         features: FeatureSet,
@@ -97,57 +100,5 @@ class RangeMeanReversionStrategy(Strategy):
 
         return False, None, "Mean reversion conditions not met"
 
-    def calculate_stop_loss(
-        self,
-        entry_price: float,
-        side: OrderSide,
-        atr: float
-    ) -> float:
-        """
-        Calculate stop loss at fixed percentage (tighter for range).
-
-        Args:
-            entry_price: Entry fill price
-            side: LONG or SHORT
-            atr: Average True Range (not used for fixed stop)
-
-        Returns:
-            Stop loss price
-        """
-        stop_pct = self.config.get("stop_pct", 0.008)  # 0.8% (tighter than trend)
-
-        if side == OrderSide.LONG:
-            stop_price = entry_price * (1 - stop_pct)
-        else:  # SHORT
-            stop_price = entry_price * (1 + stop_pct)
-
-        return stop_price
-
-    def calculate_take_profit(
-        self,
-        entry_price: float,
-        stop_price: float,
-        side: OrderSide
-    ) -> float:
-        """
-        Calculate take profit at fixed R multiple.
-
-        Args:
-            entry_price: Entry fill price
-            stop_price: Stop loss price
-            side: LONG or SHORT
-
-        Returns:
-            Take profit price
-        """
-        target_r = self.config.get("target_r_multiple", 1.2)
-
-        risk_distance = abs(entry_price - stop_price)
-        target_distance = risk_distance * target_r
-
-        if side == OrderSide.LONG:
-            tp_price = entry_price + target_distance
-        else:  # SHORT
-            tp_price = entry_price - target_distance
-
-        return tp_price
+    # Bulgu 6: calculate_stop_loss and calculate_take_profit use base class defaults.
+    # Base reads "stop_pct" (0.008) and "target_r_multiple" (1.2) from self.config automatically.

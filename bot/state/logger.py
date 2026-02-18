@@ -3,7 +3,7 @@
 import json
 import logging
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, Optional
@@ -264,7 +264,7 @@ class TradeLogger:
         Returns:
             Path to trade log file
         """
-        d = for_date or datetime.utcnow().date()
+        d = for_date or datetime.now(timezone.utc).date()
         return self._log_dir / f"trades_{d.isoformat()}.jsonl"
 
     def get_event_log_path(self, for_date: Optional[date] = None) -> Path:
@@ -277,7 +277,7 @@ class TradeLogger:
         Returns:
             Path to event log file
         """
-        d = for_date or datetime.utcnow().date()
+        d = for_date or datetime.now(timezone.utc).date()
         return self._log_dir / f"events_{d.isoformat()}.jsonl"
 
     def list_trade_logs(self) -> list:
@@ -333,7 +333,7 @@ class TradeLogger:
         record = {
             "record_type": record_type,
             "event": event_name,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": level,
             "payload": self._sanitize_payload(payload),
         }
@@ -349,7 +349,7 @@ class TradeLogger:
         Returns:
             Open file handle (text mode, append)
         """
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
 
         # Rotate if date changed
         if self._current_date != today:

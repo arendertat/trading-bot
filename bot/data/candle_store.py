@@ -39,9 +39,9 @@ class CandleStore:
         self.limits = {**self.DEFAULT_LIMITS, **(custom_limits or {})}
 
         # Storage: {symbol: {timeframe: deque[Candle]}}
-        self._store: Dict[str, Dict[str, Deque[Candle]]] = defaultdict(
-            lambda: defaultdict(lambda: deque(maxlen=self.limits.get("5m", 300)))
-        )
+        # Bulgu 7: Use plain dict for inner layer to avoid wrong maxlen on first access.
+        # add_candle() always creates the deque with the correct timeframe limit.
+        self._store: Dict[str, Dict[str, Deque[Candle]]] = defaultdict(dict)
 
         # Thread safety
         self._lock = Lock()
@@ -90,6 +90,10 @@ class CandleStore:
             List of candles (oldest to newest)
         """
         with self._lock:
+            # Bulgu 7: Guard against missing timeframe — return empty list rather than
+            # letting defaultdict auto-create a deque with the wrong maxlen.
+            if timeframe not in self._store[symbol]:
+                return []
             candles = list(self._store[symbol][timeframe])
 
             if limit is not None and limit < len(candles):
@@ -109,6 +113,9 @@ class CandleStore:
             Latest candle or None if no data
         """
         with self._lock:
+            # Bulgu 7: Guard against missing timeframe
+            if timeframe not in self._store[symbol]:
+                return None
             candles = self._store[symbol][timeframe]
             return candles[-1] if candles else None
 
@@ -144,6 +151,8 @@ class CandleStore:
             Number of candles
         """
         with self._lock:
+            if timeframe not in self._store[symbol]:
+                return 0
             return len(self._store[symbol][timeframe])
 
     def clear(self, symbol: Optional[str] = None) -> None:
