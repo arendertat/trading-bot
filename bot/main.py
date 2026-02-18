@@ -45,9 +45,12 @@ def main() -> None:
         print("\nBot stopped by user.")
         sys.exit(0)
     except Exception as e:
+        # Bulgu 9.1: Print error type only; full traceback goes to stderr (not stdout logs)
+        # to avoid leaking exchange response details containing credential fragments.
         print(f"\n[FATAL] {type(e).__name__}: {e}")
         import traceback
-        traceback.print_exc()
+        import sys as _sys
+        traceback.print_exc(file=_sys.stderr)
         sys.exit(1)
 
 

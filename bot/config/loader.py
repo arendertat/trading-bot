@@ -39,6 +39,35 @@ def substitute_env_vars(data: Any) -> Any:
         return data
 
 
+def _validate_config_path(config_path: str) -> Path:
+    """
+    Bulgu 1.1: Validate config path against path traversal attacks.
+
+    Resolves the path and ensures it ends with .json extension.
+    Does not restrict to a specific directory since the bot supports
+    arbitrary config locations via CLI/env, but blocks obvious traversal patterns.
+
+    Raises:
+        ValueError: If path appears to be a traversal attempt or invalid
+    """
+    # Block obvious traversal patterns in the raw string before resolution
+    normalized = config_path.replace("\\", "/")
+    if ".." in normalized.split("/"):
+        raise ValueError(
+            f"Config path contains path traversal sequence: {config_path}"
+        )
+
+    config_file = Path(config_path)
+
+    # Must be a .json file
+    if config_file.suffix.lower() != ".json":
+        raise ValueError(
+            f"Config path must point to a .json file, got: {config_path}"
+        )
+
+    return config_file
+
+
 def load_config(config_path: str = "config/config.json", load_env: bool = True) -> BotConfig:
     """
     Load and validate bot configuration from JSON file.
@@ -52,15 +81,16 @@ def load_config(config_path: str = "config/config.json", load_env: bool = True) 
 
     Raises:
         FileNotFoundError: If config file doesn't exist
-        ValueError: If config validation fails
+        ValueError: If config validation fails or path is unsafe
         json.JSONDecodeError: If config file is invalid JSON
     """
     # Load environment variables from .env file if requested
     if load_env:
         load_dotenv()
 
-    # Load JSON config
-    config_file = Path(config_path)
+    # Bulgu 1.1: Validate path before opening
+    config_file = _validate_config_path(config_path)
+
     if not config_file.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 

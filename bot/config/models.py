@@ -13,7 +13,9 @@ class ExchangeConfig(BaseModel):
     api_secret_env: str = "BINANCE_API_SECRET"
     usdtm_perp: bool = True
     margin_mode: str = "ISOLATED"
-    recv_window_ms: int = Field(default=5000, gt=0, le=60000)
+    # Bulgu 12.2: Reduced upper bound from 60000 to 10000ms.
+    # Binance recommends 5000ms; large values widen the replay attack window.
+    recv_window_ms: int = Field(default=5000, gt=0, le=10000)
     testnet: bool = False  # Use Binance Futures Testnet (https://testnet.binancefuture.com)
 
     @field_validator("margin_mode")

@@ -1,8 +1,41 @@
 """Binance USDT-M Perpetual Futures REST client wrapper"""
 
+import random
 import time
 from typing import Optional, Dict, List, Any
 import logging
+
+
+def _jitter(max_seconds: float = 1.0) -> float:
+    """Bulgu 12.3: Return random jitter to prevent thundering herd on rate limit recovery."""
+    return random.uniform(0, max_seconds)
+
+
+def _validate_api_credentials(api_key: str, api_secret: str) -> None:
+    """
+    Bulgu 1.2: Basic format validation for Binance API credentials.
+
+    Binance API keys and secrets are 64-character alphanumeric strings.
+    This prevents obviously malformed credentials from being sent to the exchange
+    (which could leak key fragments in error responses).
+
+    Raises:
+        ValueError: If credentials fail basic format checks
+    """
+    import re
+    # Binance keys: exactly 64 alphanumeric characters
+    _BINANCE_KEY_PATTERN = re.compile(r'^[A-Za-z0-9]{64}$')
+
+    if not _BINANCE_KEY_PATTERN.match(api_key):
+        raise ValueError(
+            "API key format is invalid. "
+            "Binance API keys must be 64 alphanumeric characters."
+        )
+    if not _BINANCE_KEY_PATTERN.match(api_secret):
+        raise ValueError(
+            "API secret format is invalid. "
+            "Binance API secrets must be 64 alphanumeric characters."
+        )
 
 import ccxt
 
@@ -108,7 +141,22 @@ class BinanceFuturesClient:
                 f"{config.api_key_env}, {config.api_secret_env}"
             )
 
+        # Bulgu 1.2: Basic format validation — Binance keys are 64-char alphanumeric
+        _validate_api_credentials(api_key, api_secret)
+
         testnet = getattr(config, 'testnet', False)
+
+        # Bulgu 9.2: Live trading requires explicit env var confirmation
+        if not testnet:
+            live_confirmed = os.getenv("LIVE_TRADING_CONFIRMED", "").strip().lower()
+            if live_confirmed != "true":
+                raise ValueError(
+                    "LIVE TRADING IS NOT ENABLED.\n"
+                    "To trade with real money, set the environment variable:\n"
+                    "  LIVE_TRADING_CONFIRMED=true\n"
+                    "This is a safety measure to prevent accidental live trading."
+                )
+
         return cls(
             api_key=api_key,
             api_secret=api_secret,
@@ -169,28 +217,29 @@ class BinanceFuturesClient:
 
             except ccxt.DDoSProtection as e:
                 # Rate limit - wait and retry
-                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                logger.warning(f"Rate limit hit, waiting {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
+                wait_time = 2 ** attempt + _jitter()
+                logger.warning(f"Rate limit hit, waiting {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(wait_time)
-                last_exception = RateLimitError(f"Rate limit exceeded: {e}")
+                # Bulgu 9.1: Use exception type name only, not full message (may contain response body)
+                last_exception = RateLimitError(f"Rate limit exceeded: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
             except ccxt.RequestTimeout as e:
                 # Network timeout - retry with backoff
-                wait_time = 2 ** attempt
-                logger.warning(f"Request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
+                wait_time = 2 ** attempt + _jitter()
+                logger.warning(f"Request timeout, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(wait_time)
-                last_exception = ExchangeError(f"Request timeout: {e}")
+                last_exception = ExchangeError(f"Request timeout: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
             except ccxt.ExchangeNotAvailable as e:
                 # Exchange down - retry with backoff
-                wait_time = 2 ** attempt
-                logger.warning(f"Exchange unavailable, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
+                wait_time = 2 ** attempt + _jitter()
+                logger.warning(f"Exchange unavailable, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(wait_time)
-                last_exception = ExchangeError(f"Exchange not available: {e}")
+                last_exception = ExchangeError(f"Exchange not available: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
@@ -201,28 +250,30 @@ class BinanceFuturesClient:
                     self.exchange.load_time_difference()
                     logger.debug("Time difference loaded successfully")
                 except Exception as sync_error:
-                    logger.error(f"Time sync failed during retry: {sync_error}")
-                last_exception = TimestampError(f"Timestamp error: {e}")
+                    logger.error(f"Time sync failed during retry: {type(sync_error).__name__}")
+                last_exception = TimestampError(f"Timestamp error: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
             except ccxt.AuthenticationError as e:
                 # Auth error - not retryable
-                auth_error = AuthError(f"Authentication failed: {e}")
+                # Bulgu 9.1: Do not include full exchange response in error message
+                auth_error = AuthError(f"Authentication failed: {type(e).__name__}")
+                logger.error("Authentication error — check API key/secret validity")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(auth_error)
                 raise auth_error
 
             except ccxt.InsufficientFunds as e:
                 # Insufficient balance - not retryable
-                balance_error = InsufficientBalanceError(f"Insufficient balance: {e}")
+                balance_error = InsufficientBalanceError(f"Insufficient balance: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(balance_error)
                 raise balance_error
 
             except ccxt.OrderNotFound as e:
                 # Order not found - not retryable
-                not_found_error = OrderNotFoundError(f"Order not found: {e}")
+                not_found_error = OrderNotFoundError(f"Order not found: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(not_found_error)
                 raise not_found_error
@@ -232,19 +283,19 @@ class BinanceFuturesClient:
                 error_msg = str(e).lower()
                 if 'timestamp' in error_msg or 'recvwindow' in error_msg:
                     # Timestamp-related error - sync time and retry immediately
-                    logger.warning(f"Timestamp-related error detected, syncing time (attempt {attempt + 1}/{self.max_retries}): {e}")
+                    logger.warning(f"Timestamp-related error detected, syncing time (attempt {attempt + 1}/{self.max_retries})")
                     try:
                         self.exchange.load_time_difference()
                         logger.debug("Time difference loaded successfully")
                     except Exception as sync_error:
-                        logger.error(f"Time sync failed during retry: {sync_error}")
-                    last_exception = TimestampError(f"Timestamp error: {e}")
+                        logger.error(f"Time sync failed during retry: {type(sync_error).__name__}")
+                    last_exception = TimestampError(f"Timestamp error: {type(e).__name__}")
                 else:
-                    # Unknown error - log and retry with backoff
-                    logger.error(f"Unexpected error: {e} (attempt {attempt + 1}/{self.max_retries})")
-                    wait_time = 2 ** attempt
+                    # Unknown error - log type only to avoid leaking exchange response body
+                    logger.error(f"Unexpected error: {type(e).__name__} (attempt {attempt + 1}/{self.max_retries})")
+                    wait_time = 2 ** attempt + _jitter()
                     time.sleep(wait_time)
-                    last_exception = ExchangeError(f"Unexpected error: {e}")
+                    last_exception = ExchangeError(f"Unexpected error: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 

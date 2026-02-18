@@ -692,6 +692,21 @@ class BotRunner:
                 f"and {self.config.exchange.api_secret_env} in .env"
             )
 
+        # Bulgu 1.2: Basic format validation
+        from bot.exchange.binance_client import _validate_api_credentials
+        _validate_api_credentials(api_key, api_secret)
+
+        # Bulgu 9.2: Live trading requires explicit env var confirmation
+        if not self.config.exchange.testnet:
+            live_confirmed = os.getenv("LIVE_TRADING_CONFIRMED", "").strip().lower()
+            if live_confirmed != "true":
+                raise ValueError(
+                    "LIVE TRADING IS NOT ENABLED.\n"
+                    "To trade with real money, set the environment variable:\n"
+                    "  LIVE_TRADING_CONFIRMED=true\n"
+                    "This is a safety measure to prevent accidental live trading."
+                )
+
         client = BinanceFuturesClient(
             api_key=api_key,
             api_secret=api_secret,

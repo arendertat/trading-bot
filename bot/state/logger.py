@@ -292,6 +292,25 @@ class TradeLogger:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _sanitize_str(value: Any) -> Any:
+        """
+        Bulgu 9.4: Strip newline/carriage-return characters from string values
+        to prevent JSONL format corruption via log injection.
+        """
+        if isinstance(value, str):
+            return value.replace("\n", "\\n").replace("\r", "\\r")
+        return value
+
+    @classmethod
+    def _sanitize_payload(cls, payload: Any) -> Any:
+        """Recursively sanitize string values in a payload dict/list."""
+        if isinstance(payload, dict):
+            return {k: cls._sanitize_payload(v) for k, v in payload.items()}
+        if isinstance(payload, list):
+            return [cls._sanitize_payload(item) for item in payload]
+        return cls._sanitize_str(payload)
+
     def _make_record(
         self,
         record_type: str,
@@ -316,7 +335,7 @@ class TradeLogger:
             "event": event_name,
             "timestamp": datetime.utcnow().isoformat(),
             "level": level,
-            "payload": payload,
+            "payload": self._sanitize_payload(payload),
         }
         return json.dumps(record, default=str)
 
