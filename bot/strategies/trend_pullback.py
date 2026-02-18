@@ -16,10 +16,13 @@ class TrendPullbackStrategy(Strategy):
     Trade pullbacks in established trends using EMA structure and RSI.
 
     Entry Logic:
-    - LONG: 1h bullish trend + 5m pullback to EMA20 + RSI 40-50
-    - SHORT: 1h bearish trend + 5m pullback to EMA20 + RSI 50-60
+    - LONG: [4h bullish] + 1h bullish trend + 5m pullback to EMA20 + RSI 40-50
+    - SHORT: [4h bearish] + 1h bearish trend + 5m pullback to EMA20 + RSI 50-60
 
-    Stop Loss: Fixed 1.0% from entry
+    4h confirmation (Özellik 6): enabled via use_4h_confirmation=true in config.
+    When 4h data is absent (warmup) the check is skipped automatically.
+
+    Stop Loss: Fixed 1.0% from entry (or ATR-based if dynamic_stop_enabled=true)
     Take Profit: 1.5R (1.5x risk distance)
     Trailing: Enabled after 1.0R profit, 2.0 * ATR distance
 
@@ -57,6 +60,12 @@ class TrendPullbackStrategy(Strategy):
         ema20_5m = features.ema20_5m
         ema50_5m = features.ema50_5m
 
+        # 4h alignment check (Özellik 6) — skipped if data not yet available
+        use_4h = self.config.get("use_4h_confirmation", False)
+        ema20_4h = features.ema20_4h
+        ema50_4h = features.ema50_4h
+        has_4h_data = ema20_4h is not None and ema50_4h is not None
+
         # Pullback band - price within configured % of EMA20
         ema20_band_pct = self.config.get("ema20_band_pct", 0.002)  # 0.2%
         price_distance_from_ema20 = abs(current_price - ema20_5m) / ema20_5m
@@ -64,6 +73,14 @@ class TrendPullbackStrategy(Strategy):
 
         # Check LONG setup
         if regime_result.trend_direction == "bullish":
+            # 4h structure: EMA20 > EMA50 on 4h (bullish alignment)
+            if use_4h and has_4h_data and ema20_4h <= ema50_4h:
+                logger.debug(
+                    f"{symbol}: 4h bearish structure (EMA20={ema20_4h:.2f} <= EMA50={ema50_4h:.2f})"
+                    f" conflicts LONG — skip"
+                )
+                return False, None, "4h structure conflicts LONG direction"
+
             # 5m structure validation: EMA20 > EMA50 OR price > EMA50
             structure_ok = ema20_5m > ema50_5m or current_price > ema50_5m
 
@@ -73,8 +90,9 @@ class TrendPullbackStrategy(Strategy):
             rsi_ok = rsi_min <= rsi <= rsi_max
 
             if structure_ok and near_ema20 and rsi_ok:
+                tf_note = " +4h✓" if (use_4h and has_4h_data) else ""
                 reason = (
-                    f"Trend pullback LONG: 1h bullish trend, price near EMA20 "
+                    f"Trend pullback LONG: 1h bullish trend{tf_note}, price near EMA20 "
                     f"({price_distance_from_ema20*100:.2f}% away), RSI={rsi:.1f}"
                 )
                 logger.info(f"{symbol}: {reason}")
@@ -82,6 +100,14 @@ class TrendPullbackStrategy(Strategy):
 
         # Check SHORT setup
         elif regime_result.trend_direction == "bearish":
+            # 4h structure: EMA20 < EMA50 on 4h (bearish alignment)
+            if use_4h and has_4h_data and ema20_4h >= ema50_4h:
+                logger.debug(
+                    f"{symbol}: 4h bullish structure (EMA20={ema20_4h:.2f} >= EMA50={ema50_4h:.2f})"
+                    f" conflicts SHORT — skip"
+                )
+                return False, None, "4h structure conflicts SHORT direction"
+
             # 5m structure validation: EMA20 < EMA50 OR price < EMA50
             structure_ok = ema20_5m < ema50_5m or current_price < ema50_5m
 
@@ -91,8 +117,9 @@ class TrendPullbackStrategy(Strategy):
             rsi_ok = rsi_min <= rsi <= rsi_max
 
             if structure_ok and near_ema20 and rsi_ok:
+                tf_note = " +4h✓" if (use_4h and has_4h_data) else ""
                 reason = (
-                    f"Trend pullback SHORT: 1h bearish trend, price near EMA20 "
+                    f"Trend pullback SHORT: 1h bearish trend{tf_note}, price near EMA20 "
                     f"({price_distance_from_ema20*100:.2f}% away), RSI={rsi:.1f}"
                 )
                 logger.info(f"{symbol}: {reason}")

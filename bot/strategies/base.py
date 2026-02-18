@@ -42,6 +42,10 @@ class FeatureSet:
     atr_z_5m: Optional[float] = None
     bb_width_5m: Optional[float] = None
 
+    # 4h timeframe (Multi-TF confirmation — Özellik 6)
+    ema20_4h: Optional[float] = None
+    ema50_4h: Optional[float] = None
+
 
 @dataclass
 class StrategySignal:
@@ -129,11 +133,22 @@ class Strategy(ABC):
         atr: float
     ) -> float:
         """
-        Bulgu 6: Default fixed-percentage stop loss.
+        Calculate stop loss price.
 
-        Reads "stop_pct" from config (default 0.01 = 1%).
-        Subclasses may override for ATR-based or other logic.
+        If dynamic_stop_enabled=True in config, uses ATR-based distance:
+            stop_distance = ATR(14) * stop_atr_multiplier
+        Otherwise falls back to fixed percentage stop_pct.
+
+        ATR-based stop adapts to volatility: tight in low-vol, wider in high-vol.
         """
+        if self.config.get("dynamic_stop_enabled", False) and atr and atr > 0:
+            multiplier = self.config.get("stop_atr_multiplier", 1.5)
+            stop_distance = atr * multiplier
+            if side == OrderSide.LONG:
+                return entry_price - stop_distance
+            return entry_price + stop_distance
+
+        # Fallback: fixed percentage
         stop_pct = self.config.get("stop_pct", 0.01)
         if side == OrderSide.LONG:
             return entry_price * (1 - stop_pct)

@@ -74,6 +74,14 @@ class FeatureEngine:
         candles_5m = self.candle_store.get_candles(symbol, "5m")
         candles_1h = self.candle_store.get_candles(symbol, "1h")
 
+        # 4h candles — optional for multi-TF confirmation (Özellik 6)
+        # Requires at least 50 bars; gracefully absent during warmup
+        candles_4h = (
+            self.candle_store.get_candles(symbol, "4h")
+            if self.candle_store.has_enough_data(symbol, "4h", 50)
+            else None
+        )
+
         # Convert to pandas DataFrames
         df_5m = self._candles_to_df(candles_5m)
         df_1h = self._candles_to_df(candles_1h)
@@ -94,6 +102,19 @@ class FeatureEngine:
         ema20_1h_series = features.ema(df_1h['close'], period=20)
         ema50_1h_series = features.ema(df_1h['close'], period=50)
 
+        # Compute indicators (4h) — None if insufficient data
+        ema20_4h_val = None
+        ema50_4h_val = None
+        if candles_4h:
+            df_4h = self._candles_to_df(candles_4h)
+            ema20_4h_series = features.ema(df_4h['close'], period=20)
+            ema50_4h_series = features.ema(df_4h['close'], period=50)
+            try:
+                ema20_4h_val = float(ema20_4h_series.iloc[-1]) if ema20_4h_series is not None else None
+                ema50_4h_val = float(ema50_4h_series.iloc[-1]) if ema50_4h_series is not None else None
+            except (IndexError, TypeError):
+                pass
+
         # Rolling 20-bar high/low (for breakout strategy)
         high_20_series = df_5m['high'].rolling(window=20).max()
         low_20_series = df_5m['low'].rolling(window=20).min()
@@ -108,6 +129,8 @@ class FeatureEngine:
                 "ema50_5m": float(ema50_5m_series.iloc[-1]) if ema50_5m_series is not None else None,
                 "ema20_1h": float(ema20_1h_series.iloc[-1]) if ema20_1h_series is not None else None,
                 "ema50_1h": float(ema50_1h_series.iloc[-1]) if ema50_1h_series is not None else None,
+                "ema20_4h": ema20_4h_val,
+                "ema50_4h": ema50_4h_val,
                 "bb_width": float(bb_result[3].iloc[-1]) if bb_result is not None else None,
                 "bb_middle": float(bb_result[0].iloc[-1]) if bb_result is not None else None,
                 "bb_upper": float(bb_result[1].iloc[-1]) if bb_result is not None else None,
@@ -118,8 +141,10 @@ class FeatureEngine:
                 "atr_z": float(atr_z_series.iloc[-1]) if atr_z_series is not None else None,
             }
 
-            # Validate core features are present (bb_middle/upper/lower/high_20/low_20 optional)
-            optional_keys = {"bb_middle", "bb_upper", "bb_lower", "high_20", "low_20"}
+            # Validate core features are present
+            # ema20_4h/ema50_4h are optional (may be None during 4h warmup)
+            optional_keys = {"bb_middle", "bb_upper", "bb_lower", "high_20", "low_20",
+                             "ema20_4h", "ema50_4h"}
             core_snapshot = {k: v for k, v in snapshot.items() if k not in optional_keys}
             if any(v is None for v in core_snapshot.values()):
                 logger.warning(f"Some core features are None for {symbol}: {core_snapshot}")

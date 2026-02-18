@@ -57,15 +57,27 @@ class TrendBreakoutStrategy(Strategy):
         low_20 = features.low_20_bars
         volume_z = features.volume_z_5m
 
+        # 4h alignment check (Özellik 6) — skipped if data not yet available
+        use_4h = self.config.get("use_4h_confirmation", False)
+        ema20_4h = features.ema20_4h
+        ema50_4h = features.ema50_4h
+        has_4h_data = ema20_4h is not None and ema50_4h is not None
+
         # Volume confirmation threshold
         volume_z_min = self.config.get("breakout_volume_z_min", 1.0)
         volume_ok = volume_z > volume_z_min
 
         # Check LONG breakout (break above 20-bar high)
         if regime_result.trend_direction == "bullish" and current_price > high_20:
+            if use_4h and has_4h_data and ema20_4h <= ema50_4h:
+                logger.debug(
+                    f"{symbol}: 4h bearish structure conflicts LONG breakout — skip"
+                )
+                return False, None, "4h structure conflicts LONG direction"
             if volume_ok:
+                tf_note = " +4h✓" if (use_4h and has_4h_data) else ""
                 reason = (
-                    f"Trend breakout LONG: Break above 20-bar high ({high_20:.2f}), "
+                    f"Trend breakout LONG{tf_note}: Break above 20-bar high ({high_20:.2f}), "
                     f"volume_z={volume_z:.2f}"
                 )
                 logger.info(f"{symbol}: {reason}")
@@ -78,9 +90,15 @@ class TrendBreakoutStrategy(Strategy):
 
         # Check SHORT breakout (break below 20-bar low)
         elif regime_result.trend_direction == "bearish" and current_price < low_20:
+            if use_4h and has_4h_data and ema20_4h >= ema50_4h:
+                logger.debug(
+                    f"{symbol}: 4h bullish structure conflicts SHORT breakout — skip"
+                )
+                return False, None, "4h structure conflicts SHORT direction"
             if volume_ok:
+                tf_note = " +4h✓" if (use_4h and has_4h_data) else ""
                 reason = (
-                    f"Trend breakout SHORT: Break below 20-bar low ({low_20:.2f}), "
+                    f"Trend breakout SHORT{tf_note}: Break below 20-bar low ({low_20:.2f}), "
                     f"volume_z={volume_z:.2f}"
                 )
                 logger.info(f"{symbol}: {reason}")

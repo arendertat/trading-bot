@@ -92,6 +92,9 @@ class StrategyTrendPullbackConfig(BaseModel):
     ema20_band_pct: float = Field(default=0.002, ge=0, le=0.05)
     trail_after_r: float = Field(default=1.0, ge=0, le=5.0)
     atr_trail_mult: float = Field(default=2.0, ge=0.5, le=10.0)
+    # ATR-based dynamic stop (Özellik 5)
+    dynamic_stop_enabled: bool = False
+    stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
 
 
 class StrategyTrendBreakoutConfig(BaseModel):
@@ -101,6 +104,9 @@ class StrategyTrendBreakoutConfig(BaseModel):
     breakout_lookback_bars: int = Field(default=20, ge=5, le=100)
     breakout_volume_z_min: float = Field(default=1.0, ge=0, le=5.0)
     atr_trail_mult: float = Field(default=2.5, ge=0.5, le=10.0)
+    # ATR-based dynamic stop (Özellik 5)
+    dynamic_stop_enabled: bool = False
+    stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
 
 
 class StrategyRangeMeanReversionConfig(BaseModel):
@@ -110,6 +116,9 @@ class StrategyRangeMeanReversionConfig(BaseModel):
     target_r_multiple: float = Field(default=1.2, ge=0.5, le=5.0)
     rsi_long_extreme: float = Field(default=25, ge=0, le=50)
     rsi_short_extreme: float = Field(default=75, ge=50, le=100)
+    # ATR-based dynamic stop (Özellik 5)
+    dynamic_stop_enabled: bool = False
+    stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
 
 
 class StrategiesConfig(BaseModel):

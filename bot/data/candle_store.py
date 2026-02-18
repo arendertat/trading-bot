@@ -27,6 +27,7 @@ class CandleStore:
     DEFAULT_LIMITS = {
         "5m": 300,
         "1h": 200,
+        "4h": 100,  # ~16 days
     }
 
     def __init__(self, custom_limits: Optional[Dict[str, int]] = None):

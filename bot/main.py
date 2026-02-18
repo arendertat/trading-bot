@@ -8,14 +8,31 @@ from bot.config.loader import load_config
 
 def main() -> None:
     """Main entry point — load config and start BotRunner."""
-    # Allow overriding config path via env or CLI arg
+    import argparse
+    parser = argparse.ArgumentParser(description="Binance USDT-M Futures Trading Bot")
+    parser.add_argument(
+        "config_path",
+        nargs="?",
+        default=None,
+        help="Path to config JSON file (overrides CONFIG_PATH env var)"
+    )
+    parser.add_argument(
+        "--close-all",
+        action="store_true",
+        default=False,
+        help="Close all open positions when bot shuts down (SIGINT/SIGTERM)"
+    )
+    args = parser.parse_args()
+
     config_path = (
         os.getenv("CONFIG_PATH")
-        or (sys.argv[1] if len(sys.argv) > 1 else None)
+        or args.config_path
         or "config/config.json"
     )
 
     print(f"Loading config from: {config_path}")
+    if args.close_all:
+        print("[WARNING] --close-all active: positions will be closed on shutdown")
 
     try:
         config = load_config(config_path)
@@ -31,7 +48,7 @@ def main() -> None:
     from bot.runner import BotRunner
 
     try:
-        runner = BotRunner(config)
+        runner = BotRunner(config, close_on_shutdown=args.close_all)
         runner.start()
     except ValueError as e:
         # API credentials missing or config error

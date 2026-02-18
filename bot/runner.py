@@ -84,9 +84,10 @@ class BotRunner:
         Fully-validated bot configuration.
     """
 
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(self, config: BotConfig, close_on_shutdown: bool = False) -> None:
         self.config = config
         self._running = False
+        self._close_on_shutdown = close_on_shutdown  # --close-all flag
 
         # ── Logging ────────────────────────────────────────────────────
         setup_logging(config.logging)
@@ -520,6 +521,8 @@ class BotRunner:
                 adx_5m=features_dict.get("adx14"),
                 atr_z_5m=features_dict.get("atr_z"),
                 bb_width_5m=features_dict.get("bb_width"),
+                ema20_4h=features_dict.get("ema20_4h"),
+                ema50_4h=features_dict.get("ema50_4h"),
             )
         except KeyError as e:
             logger.warning(f"{symbol}: missing feature {e} — skipping")
@@ -874,6 +877,54 @@ class BotRunner:
     def _shutdown(self) -> None:
         """Clean up resources on exit."""
         logger.info("BotRunner: shutting down …")
+
+        # Log all open positions for crash recovery / situational awareness
+        open_positions = self._state.get_open_positions()
+        if open_positions:
+            logger.warning(
+                f"BotRunner: {len(open_positions)} open position(s) at shutdown:"
+            )
+            for pos in open_positions:
+                logger.warning(
+                    f"  [{pos.position_id}] {pos.symbol} {pos.side.value} "
+                    f"@ entry={pos.entry_price:.4f} stop={pos.stop_price:.4f} "
+                    f"pnl_usd={pos.unrealized_pnl_usd:+.2f}"
+                )
+            self._trade_logger.log_event(
+                "SHUTDOWN_WITH_OPEN_POSITIONS",
+                payload={
+                    "count": len(open_positions),
+                    "positions": [
+                        {
+                            "position_id": p.position_id,
+                            "symbol": p.symbol,
+                            "side": p.side.value,
+                            "entry_price": p.entry_price,
+                            "stop_price": p.stop_price,
+                            "unrealized_pnl_usd": p.unrealized_pnl_usd,
+                        }
+                        for p in open_positions
+                    ],
+                },
+                level="WARNING",
+            )
+
+            # --close-all: market-close all positions at mid price
+            if self._close_on_shutdown:
+                logger.warning("BotRunner: --close-all active, closing all open positions …")
+                for pos in open_positions:
+                    try:
+                        candles = self._candle_store.get_candles(pos.symbol, "5m")
+                        exit_price = candles[-1].close if candles else pos.entry_price
+                        self._paper_fill_exit(pos, exit_price, ExitReason.KILL_SWITCH)
+                        logger.info(
+                            f"  Closed {pos.position_id} ({pos.symbol}) @ {exit_price:.4f}"
+                        )
+                    except Exception as e:
+                        logger.error(f"  Failed to close {pos.position_id}: {e}")
+        else:
+            logger.info("BotRunner: no open positions at shutdown — clean exit")
+
         try:
             self._trade_logger.close()
         except Exception:

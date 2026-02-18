@@ -41,7 +41,8 @@ class KlinesIngestor:
         self,
         symbols: List[str],
         timeframe_5m_limit: int = 300,
-        timeframe_1h_limit: int = 200
+        timeframe_1h_limit: int = 200,
+        timeframe_4h_limit: int = 100,
     ) -> None:
         """
         Fetch historical klines to warm up the candle store.
@@ -49,11 +50,13 @@ class KlinesIngestor:
         Fetches enough history for technical indicators:
         - 5m: default 300 candles (25 hours)
         - 1h: default 200 candles (~8 days)
+        - 4h: default 100 candles (~16 days) — for multi-TF confirmation
 
         Args:
             symbols: List of symbols to warm up
             timeframe_5m_limit: Number of 5m candles to fetch
             timeframe_1h_limit: Number of 1h candles to fetch
+            timeframe_4h_limit: Number of 4h candles to fetch
         """
         logger.info(f"Starting warmup for {len(symbols)} symbols...")
 
@@ -88,6 +91,20 @@ class KlinesIngestor:
                     self.candle_store.add_candle(symbol, "1h", candle)
 
                 logger.info(f"Loaded {len(klines_1h)} 1h candles for {symbol}")
+
+                # Fetch 4h candles for multi-TF confirmation
+                logger.debug(f"Fetching {timeframe_4h_limit} 4h candles for {symbol}")
+                klines_4h = self.client.fetch_klines(
+                    symbol=symbol,
+                    timeframe="4h",
+                    limit=timeframe_4h_limit
+                )
+
+                for kline_dict in klines_4h:
+                    candle = self._normalize_kline(kline_dict)
+                    self.candle_store.add_candle(symbol, "4h", candle)
+
+                logger.info(f"Loaded {len(klines_4h)} 4h candles for {symbol}")
 
             except Exception as e:
                 logger.error(f"Failed to warm up {symbol}: {e}")
@@ -132,6 +149,18 @@ class KlinesIngestor:
                     latest_1h = self._normalize_kline(klines_1h[-1])
                     self.candle_store.add_candle(symbol, "1h", latest_1h)
                     logger.debug(f"Updated 1h candle for {symbol}")
+
+                # Fetch latest 4h candle — update every cycle so candle is fresh
+                klines_4h = self.client.fetch_klines(
+                    symbol=symbol,
+                    timeframe="4h",
+                    limit=2
+                )
+
+                if klines_4h:
+                    latest_4h = self._normalize_kline(klines_4h[-1])
+                    self.candle_store.add_candle(symbol, "4h", latest_4h)
+                    logger.debug(f"Updated 4h candle for {symbol}")
 
             except Exception as e:
                 logger.error(f"Failed to update {symbol}: {e}")
