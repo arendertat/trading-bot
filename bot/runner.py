@@ -167,6 +167,11 @@ class BotRunner:
         self._realized_pnl_today: float = 0.0
         self._realized_pnl_week: float = 0.0
 
+        # ── Funding tracking (Özellik 7) ───────────────────────────────
+        # Funding is charged every 8h on Binance (00:00, 08:00, 16:00 UTC).
+        # We track last check time and apply costs when the 8h window passes.
+        self._last_funding_check: Optional[datetime] = None
+
         # ── Scheduler ─────────────────────────────────────────────────
         self._scheduler = Scheduler(
             on_candle_close=self._on_candle_close,
@@ -379,6 +384,10 @@ class BotRunner:
                 self._klines_ingestor.update(self._active_symbols)
             except Exception as e:
                 logger.warning(f"Candle update failed: {e}")
+
+        # ── 4.5. Apply funding costs (every 8h) ──────────────────────────
+        if self.config.execution.enable_funding_in_paper:
+            self._apply_funding_costs(now)
 
         # ── 5. Check open position exits ─────────────────────────────────
         self._check_position_exits(equity_usd)
@@ -645,6 +654,16 @@ class BotRunner:
             fill_price = current_price * (1.0 - slippage)
             exec_side = ExecOrderSide.SHORT
 
+        # Özellik 8: Log slippage for paper→live comparison
+        self._log_slippage(
+            symbol=symbol,
+            order_type="ENTRY_LIMIT",
+            expected_price=current_price,
+            fill_price=fill_price,
+            slippage_assumption_pct=slippage,
+            side=exec_side.value,
+        )
+
         entry_fee_usd = ps.notional_usd * fee_pct
         position_id = f"PAPER-{uuid.uuid4().hex[:8].upper()}"
 
@@ -691,6 +710,18 @@ class BotRunner:
         fee_pct = self.config.execution.taker_fee_pct
         exit_fee_usd = position.notional_usd * fee_pct
 
+        # Özellik 8: For SL/TP exits, expected = trigger price = fill price (no additional slippage)
+        # Market exits (KILL_SWITCH/MANUAL) would have market slippage, but for SL/TP we track as-is
+        slippage_pct = self.config.execution.paper_slippage_stop_pct
+        self._log_slippage(
+            symbol=position.symbol,
+            order_type=f"EXIT_{exit_reason.value}",
+            expected_price=exit_price,
+            fill_price=exit_price,  # paper: no additional exit slippage beyond the trigger
+            slippage_assumption_pct=slippage_pct,
+            side=position.side.value,
+        )
+
         position.close_position(
             exit_price=exit_price,
             exit_reason=exit_reason,
@@ -734,6 +765,139 @@ class BotRunner:
                 )
             except Exception as e:
                 logger.warning(f"PerformanceTracker update failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Funding cost simulation (Özellik 7)
+    # ------------------------------------------------------------------
+
+    def _apply_funding_costs(self, now: datetime) -> None:
+        """
+        Apply 8-hourly funding costs to open positions (paper simulation).
+
+        Binance charges funding at 00:00, 08:00, 16:00 UTC.
+        We detect when the current candle crosses a funding window boundary
+        and deduct funding_rate * notional_usd from each open position.
+
+        Only runs when enable_funding_in_paper=true in config.
+        """
+        # Determine the most recent 8h funding slot (0, 8, 16)
+        funding_hour = (now.hour // 8) * 8  # 0, 8, or 16
+        funding_slot = now.replace(hour=funding_hour, minute=0, second=0, microsecond=0)
+
+        # Skip if we already applied funding for this slot
+        if self._last_funding_check is not None and funding_slot <= self._last_funding_check:
+            return
+
+        open_positions = self._state.get_open_positions()
+        if not open_positions:
+            self._last_funding_check = funding_slot
+            return
+
+        logger.info(
+            f"Funding window {funding_slot.strftime('%H:%M')} UTC — "
+            f"applying costs to {len(open_positions)} position(s)"
+        )
+
+        # Fetch funding rates for all symbols with open positions
+        symbols = list({p.symbol for p in open_positions})
+        try:
+            rates = self._client.fetch_funding_rates(symbols)
+        except Exception as e:
+            logger.warning(f"Funding rate fetch failed, skipping funding costs: {e}")
+            self._last_funding_check = funding_slot
+            return
+
+        total_funding_usd = 0.0
+        for position in open_positions:
+            rate = rates.get(position.symbol, 0.0)
+            if rate == 0.0:
+                continue
+
+            # Long pays funding when rate > 0, Short pays when rate < 0
+            # funding_cost = |rate| * notional, sign determined by side vs rate
+            if position.side == ExecOrderSide.LONG:
+                funding_cost = rate * position.notional_usd
+            else:  # SHORT
+                funding_cost = -rate * position.notional_usd
+
+            position.funding_paid_usd += funding_cost
+            total_funding_usd += funding_cost
+
+            logger.debug(
+                f"  {position.symbol} {position.side.value}: "
+                f"rate={rate:.6f} notional=${position.notional_usd:.2f} "
+                f"cost=${funding_cost:+.4f} "
+                f"(total funding paid: ${position.funding_paid_usd:.4f})"
+            )
+
+        self._last_funding_check = funding_slot
+        logger.info(f"Funding costs applied: total ${total_funding_usd:+.4f} USD")
+
+        # Log to JSONL
+        self._trade_logger.log_event(
+            "FUNDING_APPLIED",
+            payload={
+                "funding_slot": funding_slot.isoformat(),
+                "positions_affected": len(open_positions),
+                "total_funding_usd": round(total_funding_usd, 6),
+                "rates": {sym: round(r, 8) for sym, r in rates.items()},
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Slippage tracking (Özellik 8)
+    # ------------------------------------------------------------------
+
+    def _log_slippage(
+        self,
+        symbol: str,
+        order_type: str,
+        expected_price: float,
+        fill_price: float,
+        slippage_assumption_pct: float,
+        side: str,
+    ) -> None:
+        """
+        Log slippage for paper→live comparison.
+
+        Records expected price, simulated fill price, and assumption used.
+        In live mode, the same event type will have actual_fill_price instead.
+        Comparison of paper vs live slippage reveals model accuracy.
+
+        Args:
+            symbol: Trading symbol
+            order_type: e.g. "ENTRY_LIMIT", "EXIT_SL", "EXIT_TP"
+            expected_price: Mid-price at signal time (no slippage)
+            fill_price: Simulated fill price (after slippage)
+            slippage_assumption_pct: The slippage config value used
+            side: "LONG" or "SHORT"
+        """
+        if expected_price <= 0:
+            return
+
+        actual_slippage_pct = abs(fill_price - expected_price) / expected_price
+        slippage_vs_assumption = actual_slippage_pct - slippage_assumption_pct
+
+        self._trade_logger.log_event(
+            "PAPER_SLIPPAGE",
+            payload={
+                "symbol": symbol,
+                "order_type": order_type,
+                "side": side,
+                "expected_price": round(expected_price, 8),
+                "simulated_fill_price": round(fill_price, 8),
+                "slippage_pct": round(actual_slippage_pct, 6),
+                "slippage_assumption_pct": round(slippage_assumption_pct, 6),
+                "slippage_vs_assumption": round(slippage_vs_assumption, 6),
+            },
+        )
+
+        if abs(slippage_vs_assumption) > slippage_assumption_pct * 0.5:
+            logger.debug(
+                f"[SLIPPAGE] {symbol} {order_type}: "
+                f"actual={actual_slippage_pct*100:.4f}% "
+                f"vs assumption={slippage_assumption_pct*100:.4f}%"
+            )
 
     # ------------------------------------------------------------------
     # Exit monitoring
