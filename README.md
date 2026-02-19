@@ -425,3 +425,6 @@ Bot `./logs/` klasörüne iki JSONL dosyası yazar:
 - `LIVE_TRADING_CONFIRMED=true` sadece gerçekten canlı trade yapmak istediğinde ekle
 - Testnet'te en az 1 hafta çalıştır, sonra küçük miktarla canlıya geç
 - Günlük ve haftalık stop değerlerini muhafazakar tut başlangıçta
+
+
+python3 -m bot.backtest --symbols BTCUSDT --start 2024-01-01 --end 2024-06-01 --output results/rapor_v2.json
