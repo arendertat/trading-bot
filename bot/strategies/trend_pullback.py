@@ -90,10 +90,22 @@ class TrendPullbackStrategy(Strategy):
             rsi_ok = rsi_min <= rsi <= rsi_max
 
             if structure_ok and near_ema20 and rsi_ok:
+                # Order book imbalance filter (Özellik 12) — optional
+                use_book = self.config.get("use_book_imbalance", False)
+                book_threshold = self.config.get("book_imbalance_threshold", 1.2)
+                if use_book and features.book_imbalance_ratio is not None:
+                    if features.book_imbalance_ratio < book_threshold:
+                        logger.debug(
+                            f"{symbol}: book imbalance {features.book_imbalance_ratio:.3f} "
+                            f"< threshold {book_threshold} — LONG filtered"
+                        )
+                        return False, None, "Book imbalance insufficient for LONG"
+
                 tf_note = " +4h✓" if (use_4h and has_4h_data) else ""
+                book_note = f" book={features.book_imbalance_ratio:.2f}" if features.book_imbalance_ratio is not None else ""
                 reason = (
                     f"Trend pullback LONG: 1h bullish trend{tf_note}, price near EMA20 "
-                    f"({price_distance_from_ema20*100:.2f}% away), RSI={rsi:.1f}"
+                    f"({price_distance_from_ema20*100:.2f}% away), RSI={rsi:.1f}{book_note}"
                 )
                 logger.info(f"{symbol}: {reason}")
                 return True, OrderSide.LONG, reason
@@ -117,10 +129,24 @@ class TrendPullbackStrategy(Strategy):
             rsi_ok = rsi_min <= rsi <= rsi_max
 
             if structure_ok and near_ema20 and rsi_ok:
+                # Order book imbalance filter (Özellik 12) — optional
+                # For SHORT, high bid pressure (imbalance > threshold) is bearish reversal signal
+                # So we check imbalance < 1/threshold (more asks than bids)
+                use_book = self.config.get("use_book_imbalance", False)
+                book_threshold = self.config.get("book_imbalance_threshold", 1.2)
+                if use_book and features.book_imbalance_ratio is not None:
+                    if features.book_imbalance_ratio > (1.0 / book_threshold):
+                        logger.debug(
+                            f"{symbol}: book imbalance {features.book_imbalance_ratio:.3f} "
+                            f"too bullish for SHORT — filtered"
+                        )
+                        return False, None, "Book imbalance too bullish for SHORT"
+
                 tf_note = " +4h✓" if (use_4h and has_4h_data) else ""
+                book_note = f" book={features.book_imbalance_ratio:.2f}" if features.book_imbalance_ratio is not None else ""
                 reason = (
                     f"Trend pullback SHORT: 1h bearish trend{tf_note}, price near EMA20 "
-                    f"({price_distance_from_ema20*100:.2f}% away), RSI={rsi:.1f}"
+                    f"({price_distance_from_ema20*100:.2f}% away), RSI={rsi:.1f}{book_note}"
                 )
                 logger.info(f"{symbol}: {reason}")
                 return True, OrderSide.SHORT, reason

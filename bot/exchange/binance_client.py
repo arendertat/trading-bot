@@ -674,6 +674,49 @@ class BinanceFuturesClient:
 
         return self._retry_with_backoff(_fetch)
 
+    def fetch_order_book(self, symbol: str, limit: int = 20) -> Dict[str, float]:
+        """
+        Fetch order book depth and compute bid/ask imbalance ratio (Özellik 12).
+
+        Imbalance ratio = total_bid_size / total_ask_size
+        - ratio > 1: more buy pressure (bullish bias)
+        - ratio < 1: more sell pressure (bearish bias)
+        - ratio = 1: balanced book
+
+        Args:
+            symbol: Trading pair (e.g., "BTC/USDT")
+            limit: Order book depth (number of levels per side, default 20)
+
+        Returns:
+            Dict with keys:
+                bid_volume: Total bid size across `limit` levels
+                ask_volume: Total ask size across `limit` levels
+                imbalance_ratio: bid_volume / ask_volume (0 if ask_volume == 0)
+                best_bid: Best bid price
+                best_ask: Best ask price
+        """
+        def _fetch():
+            ob = self.exchange.fetch_order_book(symbol, limit=limit)
+            bids = ob.get("bids", [])  # [[price, size], ...]
+            asks = ob.get("asks", [])
+
+            bid_vol = sum(b[1] for b in bids if len(b) >= 2)
+            ask_vol = sum(a[1] for a in asks if len(a) >= 2)
+            ratio = bid_vol / ask_vol if ask_vol > 0 else 0.0
+
+            best_bid = bids[0][0] if bids else 0.0
+            best_ask = asks[0][0] if asks else 0.0
+
+            return {
+                "bid_volume": bid_vol,
+                "ask_volume": ask_vol,
+                "imbalance_ratio": ratio,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+            }
+
+        return self._retry_with_backoff(_fetch)
+
     def fetch_funding_rates(self, symbols: List[str]) -> Dict[str, float]:
         """
         Fetch current funding rates for multiple symbols.

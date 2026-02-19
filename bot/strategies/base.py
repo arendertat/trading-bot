@@ -46,6 +46,10 @@ class FeatureSet:
     ema20_4h: Optional[float] = None
     ema50_4h: Optional[float] = None
 
+    # Order book imbalance (Özellik 12)
+    # bid_volume / ask_volume — >1 bullish pressure, <1 bearish pressure
+    book_imbalance_ratio: Optional[float] = None
+
 
 @dataclass
 class StrategySignal:

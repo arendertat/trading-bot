@@ -60,7 +60,41 @@ class RiskEngine:
         self.risk_limits = risk_limits
         self.correlation_filter = correlation_filter
 
+        # Özellik 10: Cooldown tracking — symbol → bars remaining
+        self._cooldown_bars: dict = {}
+
         logger.info("RiskEngine initialized with all risk components")
+
+    def record_sl_exit(self, symbol: str) -> None:
+        """
+        Record a stop-loss exit for cooldown tracking (Özellik 10).
+
+        Called by BotRunner after a SL/TRAIL fill.
+        Sets the cooldown counter for the symbol.
+        """
+        bars = self.config.risk.cooldown_after_sl_bars
+        if bars > 0:
+            self._cooldown_bars[symbol] = bars
+            logger.info(
+                f"[COOLDOWN] {symbol}: {bars}-bar cooldown started after SL"
+            )
+
+    def tick_cooldowns(self) -> None:
+        """
+        Decrement all active cooldown counters by 1 bar (Özellik 10).
+
+        Called by BotRunner on every candle close.
+        """
+        expired = []
+        for sym, bars in self._cooldown_bars.items():
+            remaining = bars - 1
+            if remaining <= 0:
+                expired.append(sym)
+                logger.info(f"[COOLDOWN] {sym}: cooldown expired")
+            else:
+                self._cooldown_bars[sym] = remaining
+        for sym in expired:
+            del self._cooldown_bars[sym]
 
     def validate_entry(
         self,
@@ -79,11 +113,13 @@ class RiskEngine:
 
         Validation order:
         1. Kill switch check (daily/weekly stops)
-        2. Max positions check
-        3. Direction limit check
-        4. Position sizing calculation
-        5. Open risk limit check
-        6. Correlation filter check
+        2. Cooldown check (after SL, Özellik 10)
+        3. Max positions check
+        4. Direction limit check
+        5. Position sizing calculation (HIGH_VOL risk reduction, Özellik 10)
+        6. Open risk limit check
+        7. Correlation filter check
+        8. Net exposure check
 
         Args:
             symbol: Symbol to trade
@@ -113,7 +149,18 @@ class RiskEngine:
                 rejection_reason=f"Kill switch active: {reason}",
             )
 
-        # 2. Max positions check
+        # 2. Cooldown check — symbol blocked after SL (Özellik 10)
+        cooldown_remaining = self._cooldown_bars.get(symbol, 0)
+        if cooldown_remaining > 0:
+            logger.info(
+                f"[COOLDOWN] {symbol}: {cooldown_remaining} bars remaining — entry blocked"
+            )
+            return RiskValidationResult(
+                approved=False,
+                rejection_reason=f"Cooldown active: {cooldown_remaining} bars remaining after SL",
+            )
+
+        # 3. Max positions check
         approved, reason = self.risk_limits.check_max_positions(open_positions)
         if not approved:
             logger.warning(f"Max positions check failed: {reason}")
@@ -127,14 +174,23 @@ class RiskEngine:
             logger.warning(f"Direction limit check failed: {reason}")
             return RiskValidationResult(approved=False, rejection_reason=reason)
 
-        # 4. Position sizing calculation
+        # 5. Position sizing calculation
+        # Özellik 10: HIGH_VOL → apply reduced risk if no explicit override
+        effective_risk_pct = risk_per_trade_pct
+        if effective_risk_pct is None and regime == RegimeType.HIGH_VOL:
+            effective_risk_pct = self.config.risk.high_vol_risk_reduction_pct
+            logger.info(
+                f"[HIGH_VOL] {symbol}: reduced risk "
+                f"{effective_risk_pct:.2%} (normal: {self.config.risk.risk_per_trade_pct:.2%})"
+            )
+
         position_size = self.position_sizing.calculate(
             equity_usd=equity_usd,
             stop_pct=stop_pct,
             regime=regime,
             current_price=current_price,
             free_margin_usd=free_margin_usd,
-            risk_per_trade_pct=risk_per_trade_pct,
+            risk_per_trade_pct=effective_risk_pct,
         )
 
         if not position_size.approved:
@@ -145,7 +201,7 @@ class RiskEngine:
                 position_size=position_size,
             )
 
-        # 5. Open risk limit check
+        # 6. Open risk limit check
         new_position_risk = position_size.risk_usd
         approved, reason = self.risk_limits.check_open_risk_limit(
             new_position_risk_usd=new_position_risk,
@@ -160,7 +216,7 @@ class RiskEngine:
                 position_size=position_size,
             )
 
-        # 6. Correlation filter check
+        # 7. Correlation filter check
         approved, reason = self.correlation_filter.check_correlation_filter(
             new_symbol=symbol,
             new_side=side,
@@ -174,7 +230,7 @@ class RiskEngine:
                 position_size=position_size,
             )
 
-        # 7. Net exposure + single-symbol concentration check (Özellik 9)
+        # 8. Net exposure + single-symbol concentration check (Özellik 9)
         approved, reason = self.risk_limits.check_net_exposure(
             new_side=side.value,
             new_notional_usd=position_size.notional_usd,

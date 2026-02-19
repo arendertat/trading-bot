@@ -67,6 +67,10 @@ class TrendBreakoutStrategy(Strategy):
         volume_z_min = self.config.get("breakout_volume_z_min", 1.0)
         volume_ok = volume_z > volume_z_min
 
+        # Order book imbalance filter (Özellik 12) — optional
+        use_book = self.config.get("use_book_imbalance", False)
+        book_threshold = self.config.get("book_imbalance_threshold", 1.2)
+
         # Check LONG breakout (break above 20-bar high)
         if regime_result.trend_direction == "bullish" and current_price > high_20:
             if use_4h and has_4h_data and ema20_4h <= ema50_4h:
@@ -75,10 +79,20 @@ class TrendBreakoutStrategy(Strategy):
                 )
                 return False, None, "4h structure conflicts LONG direction"
             if volume_ok:
+                # Book imbalance: for LONG breakout, confirm bid pressure dominates
+                if use_book and features.book_imbalance_ratio is not None:
+                    if features.book_imbalance_ratio < book_threshold:
+                        logger.debug(
+                            f"{symbol}: book imbalance {features.book_imbalance_ratio:.3f} "
+                            f"< threshold {book_threshold} — LONG breakout filtered"
+                        )
+                        return False, None, "Book imbalance insufficient for LONG breakout"
+
                 tf_note = " +4h✓" if (use_4h and has_4h_data) else ""
+                book_note = f" book={features.book_imbalance_ratio:.2f}" if features.book_imbalance_ratio is not None else ""
                 reason = (
                     f"Trend breakout LONG{tf_note}: Break above 20-bar high ({high_20:.2f}), "
-                    f"volume_z={volume_z:.2f}"
+                    f"volume_z={volume_z:.2f}{book_note}"
                 )
                 logger.info(f"{symbol}: {reason}")
                 return True, OrderSide.LONG, reason
@@ -96,10 +110,20 @@ class TrendBreakoutStrategy(Strategy):
                 )
                 return False, None, "4h structure conflicts SHORT direction"
             if volume_ok:
+                # Book imbalance: for SHORT breakout, confirm ask pressure dominates
+                if use_book and features.book_imbalance_ratio is not None:
+                    if features.book_imbalance_ratio > (1.0 / book_threshold):
+                        logger.debug(
+                            f"{symbol}: book imbalance {features.book_imbalance_ratio:.3f} "
+                            f"too bullish for SHORT breakout — filtered"
+                        )
+                        return False, None, "Book imbalance too bullish for SHORT breakout"
+
                 tf_note = " +4h✓" if (use_4h and has_4h_data) else ""
+                book_note = f" book={features.book_imbalance_ratio:.2f}" if features.book_imbalance_ratio is not None else ""
                 reason = (
                     f"Trend breakout SHORT{tf_note}: Break below 20-bar low ({low_20:.2f}), "
-                    f"volume_z={volume_z:.2f}"
+                    f"volume_z={volume_z:.2f}{book_note}"
                 )
                 logger.info(f"{symbol}: {reason}")
                 return True, OrderSide.SHORT, reason

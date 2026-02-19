@@ -1,7 +1,10 @@
 """Regime detection engine"""
 
 import logging
+from collections import deque
 from typing import Optional
+
+import numpy as np
 
 from bot.config.models import RegimeConfig
 from bot.core.constants import RegimeType
@@ -30,7 +33,20 @@ class RegimeDetector:
             config: Regime configuration
         """
         self.config = config
-        logger.info("RegimeDetector initialized")
+
+        # Özellik 11: Adaptive regime thresholds
+        # Rolling ADX history across all symbols (combined)
+        self._adx_history: deque = deque(
+            maxlen=config.adaptive_adx_window
+        )
+        # Live adaptive thresholds (start from config defaults)
+        self._adaptive_trend_adx_min: float = config.trend_adx_min
+        self._adaptive_range_adx_max: float = config.range_adx_max
+
+        logger.info(
+            f"RegimeDetector initialized "
+            f"(adaptive={'ON' if config.adaptive_regime else 'OFF'})"
+        )
 
     def detect_regime(
         self,
@@ -61,6 +77,11 @@ class RegimeDetector:
         Returns:
             RegimeResult with regime classification and confidence
         """
+        # Özellik 11: Update adaptive ADX thresholds from rolling history
+        if self.config.adaptive_regime and adx > 0:
+            self._adx_history.append(adx)
+            self._update_adaptive_thresholds()
+
         # If spread fails, immediately return CHOP_NO_TRADE
         if not spread_ok:
             logger.warning(f"{symbol}: CHOP_NO_TRADE (spread filter failed)")
@@ -95,15 +116,17 @@ class RegimeDetector:
         trend_1h_bullish = ema20_1h > ema50_1h
         trend_1h_bearish = ema20_1h < ema50_1h
 
-        if adx > self.config.trend_adx_min and (trend_1h_bullish or trend_1h_bearish):
+        trend_threshold = self._adaptive_trend_adx_min
+        if adx > trend_threshold and (trend_1h_bullish or trend_1h_bearish):
             regime_scores[RegimeType.TREND] = self._compute_trend_confidence(
                 adx, trend_1h_bullish, trend_1h_bearish
             )
             trend_direction = "bullish" if trend_1h_bullish else "bearish"
-            reasons.append(f"Trend ({trend_direction}): ADX={adx:.1f}")
+            reasons.append(f"Trend ({trend_direction}): ADX={adx:.1f} (thresh={trend_threshold:.1f})")
 
         # Rule 3: RANGE if ADX < threshold and BB width within range
-        if adx < self.config.range_adx_max:
+        range_threshold = self._adaptive_range_adx_max
+        if adx < range_threshold:
             bb_in_range = self._check_bb_width_range(bb_width)
             if bb_in_range:
                 regime_scores[RegimeType.RANGE] = self._compute_range_confidence(adx, bb_width)
@@ -181,15 +204,15 @@ class RegimeDetector:
         Returns:
             Confidence score [0, 1]
         """
-        if adx <= self.config.trend_adx_min:
+        threshold = self._adaptive_trend_adx_min
+        if adx <= threshold:
             return 0.0
 
         if not (trend_1h_bullish or trend_1h_bearish):
             return 0.0
 
-        # Linear scaling from trend_adx_min to trend_adx_min+20
-        # trend_adx_min -> 0.6, trend_adx_min+20 -> 1.0
-        excess = adx - self.config.trend_adx_min
+        # Linear scaling from threshold to threshold+20
+        excess = adx - threshold
         confidence = 0.6 + (excess / 20.0) * 0.4
 
         return max(0.0, min(1.0, confidence))
@@ -207,12 +230,12 @@ class RegimeDetector:
         Returns:
             Confidence score [0, 1]
         """
-        if adx >= self.config.range_adx_max:
+        threshold = self._adaptive_range_adx_max
+        if adx >= threshold:
             return 0.0
 
         # ADX component: lower is better
-        # range_adx_max -> 0.6, 0 -> 1.0
-        adx_score = 0.6 + (1.0 - adx / self.config.range_adx_max) * 0.4
+        adx_score = 0.6 + (1.0 - adx / max(threshold, 1.0)) * 0.4
 
         # BB width component: prefer moderate width
         bb_score = 1.0
@@ -227,6 +250,44 @@ class RegimeDetector:
         confidence = adx_score * bb_score
 
         return max(0.0, min(1.0, confidence))
+
+    def _update_adaptive_thresholds(self) -> None:
+        """
+        Update ADX thresholds from rolling history (Özellik 11).
+
+        Uses:
+          trend_threshold = 75th percentile of recent ADX values
+          range_threshold = 25th percentile of recent ADX values
+
+        Requires at least 50 samples; falls back to config defaults otherwise.
+        Enforces range_threshold < trend_threshold (min 2-point gap).
+        """
+        if len(self._adx_history) < 50:
+            return  # Not enough data yet, keep config defaults
+
+        arr = np.array(self._adx_history)
+        trend_pct = float(np.percentile(arr, 75))
+        range_pct = float(np.percentile(arr, 25))
+
+        # Clamp to config validator bounds
+        trend_pct = max(15.0, min(50.0, trend_pct))
+        range_pct = max(10.0, min(30.0, range_pct))
+
+        # Enforce gap: range must be < trend by at least 2
+        if range_pct >= trend_pct - 2.0:
+            range_pct = trend_pct - 2.0
+
+        if (abs(trend_pct - self._adaptive_trend_adx_min) > 0.5 or
+                abs(range_pct - self._adaptive_range_adx_max) > 0.5):
+            logger.info(
+                f"Adaptive ADX thresholds updated: "
+                f"trend_min={trend_pct:.1f} (was {self._adaptive_trend_adx_min:.1f}), "
+                f"range_max={range_pct:.1f} (was {self._adaptive_range_adx_max:.1f}) "
+                f"[{len(self._adx_history)} samples]"
+            )
+
+        self._adaptive_trend_adx_min = trend_pct
+        self._adaptive_range_adx_max = range_pct
 
     def _check_bb_width_range(self, bb_width: float) -> bool:
         """

@@ -68,6 +68,11 @@ class RiskConfig(BaseModel):
     pause_days_after_weekly_stop: int = Field(default=7, ge=1, le=30)
     reduced_risk_after_pause_pct: float = Field(default=0.005, gt=0, le=0.1)  # 0.005 = 0.5%
     reduced_risk_days: int = Field(default=3, ge=1, le=30)
+    # Volatility Regime Scaling (Özellik 10)
+    # HIGH_VOL'da risk per trade'i azalt
+    high_vol_risk_reduction_pct: float = Field(default=0.005, gt=0, le=0.1)  # 0.5%
+    # SL'den sonra aynı sembolde kaç 5m bar bekle (0 = devre dışı)
+    cooldown_after_sl_bars: int = Field(default=0, ge=0, le=50)
     # Portfolio Exposure Monitor (Özellik 9)
     # Net exposure = |long_notional - short_notional| / equity
     # Default 2.0 = disabled in practice (allows up to 2x equity net exposure)
@@ -87,6 +92,10 @@ class RegimeConfig(BaseModel):
     confidence_threshold: float = Field(default=0.55, ge=0.3, le=0.9)
     bb_width_range_min: Optional[float] = Field(default=0.01, ge=0, le=0.1)
     bb_width_range_max: Optional[float] = Field(default=0.05, ge=0, le=0.2)
+    # Adaptive Regime Parameters (Özellik 11)
+    # ADX eşikleri son 30 günlük ADX dağılımına göre otomatik ayarlanır
+    adaptive_regime: bool = False
+    adaptive_adx_window: int = Field(default=8640, ge=100, le=50000)  # 30d × 288 bar/gün
 
 
 class StrategyTrendPullbackConfig(BaseModel):
@@ -104,6 +113,10 @@ class StrategyTrendPullbackConfig(BaseModel):
     # ATR-based dynamic stop (Özellik 5)
     dynamic_stop_enabled: bool = False
     stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
+    # Order book imbalance confirmation (Özellik 12)
+    # When True, requires bid/ask imbalance aligned with trade direction
+    use_book_imbalance: bool = False
+    book_imbalance_threshold: float = Field(default=1.2, ge=1.0, le=5.0)
 
 
 class StrategyTrendBreakoutConfig(BaseModel):
@@ -116,6 +129,10 @@ class StrategyTrendBreakoutConfig(BaseModel):
     # ATR-based dynamic stop (Özellik 5)
     dynamic_stop_enabled: bool = False
     stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
+    # Order book imbalance confirmation (Özellik 12)
+    # When True, requires bid/ask imbalance aligned with trade direction
+    use_book_imbalance: bool = False
+    book_imbalance_threshold: float = Field(default=1.2, ge=1.0, le=5.0)
 
 
 class StrategyRangeMeanReversionConfig(BaseModel):

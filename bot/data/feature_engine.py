@@ -141,10 +141,13 @@ class FeatureEngine:
                 "atr_z": float(atr_z_series.iloc[-1]) if atr_z_series is not None else None,
             }
 
+            # book_imbalance_ratio is fetched externally (runner) and injected
+            snapshot["book_imbalance_ratio"] = None
+
             # Validate core features are present
             # ema20_4h/ema50_4h are optional (may be None during 4h warmup)
             optional_keys = {"bb_middle", "bb_upper", "bb_lower", "high_20", "low_20",
-                             "ema20_4h", "ema50_4h"}
+                             "ema20_4h", "ema50_4h", "book_imbalance_ratio"}
             core_snapshot = {k: v for k, v in snapshot.items() if k not in optional_keys}
             if any(v is None for v in core_snapshot.values()):
                 logger.warning(f"Some core features are None for {symbol}: {core_snapshot}")

@@ -410,6 +410,9 @@ class BotRunner:
                 f"— no new entries"
             )
 
+        # ── 3.5. Tick cooldown counters (Özellik 10) ─────────────────────
+        self._risk_engine.tick_cooldowns()
+
         # ── 4. Update candle data ────────────────────────────────────────
         if self._active_symbols:
             try:
@@ -558,6 +561,20 @@ class BotRunner:
             logger.debug(f"{symbol}: insufficient data — skipping")
             return
 
+        # ── Order book imbalance (Özellik 12) ────────────────────────
+        # Fetch order book and compute bid/ask volume ratio.
+        # Non-fatal: if fetch fails, book_imbalance_ratio stays None.
+        book_imbalance_ratio: Optional[float] = None
+        try:
+            ob = self._client.fetch_order_book(symbol, limit=20)
+            book_imbalance_ratio = ob.get("imbalance_ratio")
+            logger.debug(
+                f"{symbol}: book imbalance ratio={book_imbalance_ratio:.3f}"
+                if book_imbalance_ratio is not None else f"{symbol}: book imbalance N/A"
+            )
+        except Exception as e:
+            logger.debug(f"{symbol}: order book fetch failed (non-fatal): {e}")
+
         try:
             feature_set = FeatureSet(
                 rsi_5m=features_dict["rsi14"],
@@ -577,6 +594,7 @@ class BotRunner:
                 bb_width_5m=features_dict.get("bb_width"),
                 ema20_4h=features_dict.get("ema20_4h"),
                 ema50_4h=features_dict.get("ema50_4h"),
+                book_imbalance_ratio=book_imbalance_ratio,
             )
         except KeyError as e:
             logger.warning(f"{symbol}: missing feature {e} — skipping")
@@ -777,6 +795,10 @@ class BotRunner:
         # Update PnL accumulators
         self._realized_pnl_today += position.realized_pnl_usd
         self._realized_pnl_week += position.realized_pnl_usd
+
+        # Özellik 10: Record SL exit for cooldown
+        if exit_reason in (ExitReason.SL, ExitReason.TRAIL):
+            self._risk_engine.record_sl_exit(position.symbol)
 
         r_multiple = (
             position.realized_pnl_usd / position.risk_amount_usd
