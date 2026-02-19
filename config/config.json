@@ -8,7 +8,7 @@
     "usdtm_perp": true,
     "margin_mode": "ISOLATED",
     "recv_window_ms": 5000,
-    "testnet": true
+    "testnet": false
   },
   "universe": {
     "min_24h_volume_usdt": 100000000,
@@ -38,7 +38,9 @@
     "weekly_stop_pct": -0.1,
     "pause_days_after_weekly_stop": 7,
     "reduced_risk_after_pause_pct": 0.005,
-    "reduced_risk_days": 3
+    "reduced_risk_days": 3,
+    "max_net_exposure_pct": 2.0,
+    "max_single_symbol_exposure_pct": 2.0
   },
   "regime": {
     "trend_adx_min": 25,
@@ -51,13 +53,13 @@
   "strategies": {
     "trend_pullback": {
       "enabled": true,
-      "stop_pct": 0.01,
-      "target_r_multiple": 1.5,
-      "pullback_rsi_long_min": 40,
-      "pullback_rsi_long_max": 50,
-      "pullback_rsi_short_min": 50,
-      "pullback_rsi_short_max": 60,
-      "ema20_band_pct": 0.002,
+      "stop_pct": 0.012,
+      "target_r_multiple": 2.5,
+      "pullback_rsi_long_min": 42,
+      "pullback_rsi_long_max": 48,
+      "pullback_rsi_short_min": 52,
+      "pullback_rsi_short_max": 58,
+      "ema20_band_pct": 0.001,
       "trail_after_r": 1.0,
       "atr_trail_mult": 2.0
     },
