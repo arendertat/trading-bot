@@ -186,6 +186,13 @@ class NotificationConfig(BaseModel):
         return v
 
 
+class DashboardConfig(BaseModel):
+    """Web dashboard configuration (Özellik 4)"""
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = Field(default=8080, ge=1024, le=65535)
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration"""
     log_dir: str = "./logs"
@@ -217,6 +224,7 @@ class BotConfig(BaseModel):
     performance: PerformanceConfig
     notifications: NotificationConfig
     logging: LoggingConfig
+    dashboard: DashboardConfig = DashboardConfig()
 
     @model_validator(mode="after")
     def validate_config(self):

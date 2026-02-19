@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -173,6 +174,10 @@ class BotRunner:
         log_dir = config.logging.log_dir
         os.makedirs(log_dir, exist_ok=True)
         self._trade_logger = TradeLogger(log_dir=log_dir)
+        self._log_reader = LogReader(log_dir=log_dir)
+
+        # ── Dashboard (Özellik 4) ──────────────────────────────────────
+        self._dashboard_thread: Optional[threading.Thread] = None
 
         # ── PnL tracking (paper: equity-delta based) ───────────────────
         self._realized_pnl_today: float = 0.0
@@ -233,6 +238,10 @@ class BotRunner:
                 logger.warning(
                     f"WebSocket stream start failed (falling back to REST polling): {e}"
                 )
+
+        # Start web dashboard (Özellik 4)
+        if self.config.dashboard.enabled:
+            self._start_dashboard()
 
         logger.info("BotRunner: entering main event loop")
         self._running = True
@@ -1113,6 +1122,50 @@ class BotRunner:
             logger.warning("Exchange ping failed — connectivity may be limited")
 
         return client
+
+    # ------------------------------------------------------------------
+    # Dashboard (Özellik 4)
+    # ------------------------------------------------------------------
+
+    def _start_dashboard(self) -> None:
+        """Start the web dashboard in a background daemon thread."""
+        try:
+            import uvicorn
+            from bot.dashboard.app import create_app
+
+            app = create_app(
+                state_manager=self._state,
+                perf_tracker=self._perf_tracker,
+                log_reader=self._log_reader,
+                kill_switch=self._kill_switch,
+                safe_mode=self._safe_mode,
+                risk_limits=self._risk_limits,
+            )
+
+            host = self.config.dashboard.host
+            port = self.config.dashboard.port
+
+            def _run():
+                uvicorn.run(
+                    app,
+                    host=host,
+                    port=port,
+                    log_level="warning",  # suppress uvicorn access logs
+                    access_log=False,
+                )
+
+            self._dashboard_thread = threading.Thread(
+                target=_run,
+                name="dashboard",
+                daemon=True,  # exits when main thread exits
+            )
+            self._dashboard_thread.start()
+            logger.info(
+                f"Dashboard started → http://{host}:{port}  "
+                f"(API docs: http://{host}:{port}/api/docs)"
+            )
+        except Exception as e:
+            logger.warning(f"Dashboard start failed (non-fatal): {e}")
 
     def _shutdown(self) -> None:
         """Clean up resources on exit."""
