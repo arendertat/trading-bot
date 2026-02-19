@@ -46,6 +46,7 @@ from bot.core.types import Position as CorePosition
 from bot.data.candle_store import CandleStore
 from bot.data.feature_engine import FeatureEngine
 from bot.data.klines_ingestor import KlinesIngestor
+from bot.data.kline_stream import KlineStream
 from bot.exchange.binance_client import BinanceFuturesClient
 from bot.exchange.exceptions import ExchangeError, AuthError
 from bot.execution.models import OrderSide as ExecOrderSide
@@ -112,6 +113,16 @@ class BotRunner:
         self._candle_store = CandleStore()
         self._klines_ingestor = KlinesIngestor(self._client, self._candle_store)
         self._feature_engine = FeatureEngine(self._candle_store, config.timeframes)
+
+        # ── WebSocket / REST kline feed (Özellik 2) ───────────────────
+        # KlineStream wraps WSManager (WebSocket-primary) + KlinesIngestor (REST fallback).
+        # WS is started after warmup in start(); REST polling continues as safety net.
+        self._kline_stream = KlineStream(
+            client=self._client,
+            candle_store=self._candle_store,
+            symbols=[],  # populated after universe build in start()
+            testnet=config.exchange.testnet,
+        )
 
         # ── Universe selection ─────────────────────────────────────────
         self._universe_selector = UniverseSelector(
@@ -210,6 +221,18 @@ class BotRunner:
                 self._klines_ingestor.warmup(self._active_symbols)
             except Exception as e:
                 logger.warning(f"Candle warmup failed (non-fatal): {e}")
+
+            # Start WebSocket stream after warmup (Özellik 2)
+            try:
+                self._kline_stream.update_symbols(self._active_symbols)
+                self._kline_stream.start()
+                logger.info(
+                    f"BotRunner: WebSocket stream started for {self._active_symbols}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"WebSocket stream start failed (falling back to REST polling): {e}"
+                )
 
         logger.info("BotRunner: entering main event loop")
         self._running = True
@@ -389,6 +412,9 @@ class BotRunner:
         if self.config.execution.enable_funding_in_paper:
             self._apply_funding_costs(now)
 
+        # ── 4.6. Exposure snapshot (Özellik 9) ───────────────────────────
+        self._log_exposure_snapshot(equity_usd)
+
         # ── 5. Check open position exits ─────────────────────────────────
         self._check_position_exits(equity_usd)
 
@@ -463,6 +489,7 @@ class BotRunner:
 
     def _refresh_universe(self, now: datetime) -> None:
         """Rebuild daily universe from exchange data."""
+        old_symbols = set(self._active_symbols)
         try:
             symbols = self._universe_selector.build_daily_universe(now)
             self._active_symbols = symbols
@@ -473,6 +500,15 @@ class BotRunner:
                 self._active_symbols = list(self.config.universe.whitelist)
                 if self._active_symbols:
                     logger.info(f"Using whitelist as fallback: {self._active_symbols}")
+
+        # Update WebSocket subscriptions if symbol list changed (Özellik 2)
+        new_symbols = set(self._active_symbols)
+        if new_symbols != old_symbols:
+            try:
+                self._kline_stream.update_symbols(self._active_symbols)
+                logger.info("WSManager: subscriptions updated after universe refresh")
+            except Exception as e:
+                logger.warning(f"WS subscription update failed: {e}")
 
     # ------------------------------------------------------------------
     # Entry pipeline
@@ -845,6 +881,46 @@ class BotRunner:
         )
 
     # ------------------------------------------------------------------
+    # Exposure monitoring (Özellik 9)
+    # ------------------------------------------------------------------
+
+    def _log_exposure_snapshot(self, equity_usd: float) -> None:
+        """
+        Log portfolio exposure snapshot every candle close.
+
+        Records net directional exposure and per-symbol concentration.
+        Used for monitoring paper→live drift and detecting over-concentration.
+        Only logs when there are open positions (no-op otherwise).
+        """
+        open_positions = self._state.get_open_positions()
+        if not open_positions:
+            return
+
+        core_positions = self._to_core_positions(open_positions)
+        snapshot = self._risk_limits.get_exposure_summary(core_positions, equity_usd)
+
+        net_pct = snapshot["net_exposure_pct"]
+        max_net = snapshot["max_net_exposure_pct"]
+
+        # Warn if approaching limit (>80% of max)
+        if net_pct > max_net * 0.8:
+            logger.warning(
+                f"[EXPOSURE] Net exposure {net_pct:.1%} approaching limit {max_net:.1%} "
+                f"| long=${snapshot['long_notional_usd']:.0f} "
+                f"short=${snapshot['short_notional_usd']:.0f}"
+            )
+        else:
+            logger.debug(
+                f"[EXPOSURE] Net={net_pct:.1%}/{max_net:.1%} "
+                f"symbols={snapshot['symbol_exposures']}"
+            )
+
+        self._trade_logger.log_event(
+            "EXPOSURE_SNAPSHOT",
+            payload=snapshot,
+        )
+
+    # ------------------------------------------------------------------
     # Slippage tracking (Özellik 8)
     # ------------------------------------------------------------------
 
@@ -1088,6 +1164,12 @@ class BotRunner:
                         logger.error(f"  Failed to close {pos.position_id}: {e}")
         else:
             logger.info("BotRunner: no open positions at shutdown — clean exit")
+
+        # Stop WebSocket stream (Özellik 2)
+        try:
+            self._kline_stream.stop()
+        except Exception as e:
+            logger.debug(f"WS stream stop error (non-fatal): {e}")
 
         try:
             self._trade_logger.close()

@@ -174,6 +174,22 @@ class RiskEngine:
                 position_size=position_size,
             )
 
+        # 7. Net exposure + single-symbol concentration check (Özellik 9)
+        approved, reason = self.risk_limits.check_net_exposure(
+            new_side=side.value,
+            new_notional_usd=position_size.notional_usd,
+            new_symbol=symbol,
+            open_positions=open_positions,
+            equity_usd=equity_usd,
+        )
+        if not approved:
+            logger.warning(f"Exposure limit check failed: {reason}")
+            return RiskValidationResult(
+                approved=False,
+                rejection_reason=reason,
+                position_size=position_size,
+            )
+
         # All checks passed
         logger.info(
             f"✅ Risk validation passed: {symbol} {side.value}, "

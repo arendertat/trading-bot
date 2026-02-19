@@ -68,6 +68,15 @@ class RiskConfig(BaseModel):
     pause_days_after_weekly_stop: int = Field(default=7, ge=1, le=30)
     reduced_risk_after_pause_pct: float = Field(default=0.005, gt=0, le=0.1)  # 0.005 = 0.5%
     reduced_risk_days: int = Field(default=3, ge=1, le=30)
+    # Portfolio Exposure Monitor (Özellik 9)
+    # Net exposure = |long_notional - short_notional| / equity
+    # Default 2.0 = disabled in practice (allows up to 2x equity net exposure)
+    # Set to e.g. 0.8 to limit net directional bias to 80% of equity
+    max_net_exposure_pct: float = Field(default=2.0, ge=0.0, le=10.0)
+    # Single-symbol concentration limit (symbol_notional / equity)
+    # Default 1.0 = disabled in practice (allows full equity in one symbol)
+    # Set to e.g. 0.5 to limit any single symbol to 50% of equity
+    max_single_symbol_exposure_pct: float = Field(default=1.0, ge=0.0, le=5.0)
 
 
 class RegimeConfig(BaseModel):

@@ -191,6 +191,137 @@ class RiskLimits:
 
         return max(0.0, available)
 
+    @staticmethod
+    def _get_notional(position) -> float:
+        """Return notional value from either CorePosition or ExecPosition."""
+        # CorePosition uses .notional; ExecPosition uses .notional_usd
+        if hasattr(position, "notional_usd"):
+            return position.notional_usd
+        return position.notional
+
+    def check_net_exposure(
+        self,
+        new_side: str,
+        new_notional_usd: float,
+        new_symbol: str,
+        open_positions: List[Position],
+        equity_usd: float,
+    ) -> tuple[bool, str]:
+        """
+        Check net directional exposure and single-symbol concentration limits.
+
+        Net exposure = (total LONG notional - total SHORT notional) / equity
+        Single-symbol exposure = symbol notional / equity
+
+        Args:
+            new_side: 'LONG' or 'SHORT' for the new position
+            new_notional_usd: Notional size of the new position in USD
+            new_symbol: Symbol of the new position
+            open_positions: Currently open positions
+            equity_usd: Current account equity
+
+        Returns:
+            (approved, rejection_reason)
+        """
+        if equity_usd <= 0:
+            return False, "Zero or negative equity"
+
+        # Calculate current notionals per direction
+        long_notional = sum(
+            self._get_notional(p) for p in open_positions if p.side.value == "LONG"
+        )
+        short_notional = sum(
+            self._get_notional(p) for p in open_positions if p.side.value == "SHORT"
+        )
+
+        # Add new position
+        if new_side == "LONG":
+            long_notional += new_notional_usd
+        else:
+            short_notional += new_notional_usd
+
+        # Net exposure check
+        net_exposure = abs(long_notional - short_notional) / equity_usd
+        if net_exposure > self.config.max_net_exposure_pct:
+            logger.warning(
+                f"Net exposure limit exceeded: {net_exposure:.2%} > "
+                f"{self.config.max_net_exposure_pct:.2%} "
+                f"(long=${long_notional:.2f}, short=${short_notional:.2f})"
+            )
+            return (
+                False,
+                f"Net exposure {net_exposure:.2%} exceeds limit "
+                f"{self.config.max_net_exposure_pct:.2%}",
+            )
+
+        # Single-symbol exposure check
+        symbol_notional = sum(
+            self._get_notional(p) for p in open_positions if p.symbol == new_symbol
+        ) + new_notional_usd
+        symbol_exposure = symbol_notional / equity_usd
+        if symbol_exposure > self.config.max_single_symbol_exposure_pct:
+            logger.warning(
+                f"Single-symbol exposure limit exceeded for {new_symbol}: "
+                f"{symbol_exposure:.2%} > {self.config.max_single_symbol_exposure_pct:.2%}"
+            )
+            return (
+                False,
+                f"{new_symbol} exposure {symbol_exposure:.2%} exceeds limit "
+                f"{self.config.max_single_symbol_exposure_pct:.2%}",
+            )
+
+        logger.debug(
+            f"Exposure check passed: net={net_exposure:.2%} "
+            f"symbol_{new_symbol}={symbol_exposure:.2%}"
+        )
+        return True, ""
+
+    def get_exposure_summary(
+        self, open_positions: List[Position], equity_usd: float
+    ) -> dict:
+        """
+        Get portfolio exposure snapshot for logging / monitoring.
+
+        Returns:
+            Dict with long/short notionals, net exposure, per-symbol breakdown.
+        """
+        long_notional = sum(
+            self._get_notional(p) for p in open_positions if p.side.value == "LONG"
+        )
+        short_notional = sum(
+            self._get_notional(p) for p in open_positions if p.side.value == "SHORT"
+        )
+        total_notional = long_notional + short_notional
+        net_notional = long_notional - short_notional
+        net_exposure_pct = abs(net_notional) / equity_usd if equity_usd > 0 else 0.0
+
+        # Per-symbol breakdown
+        symbols: dict = {}
+        for p in open_positions:
+            sym = p.symbol
+            if sym not in symbols:
+                symbols[sym] = {"long": 0.0, "short": 0.0}
+            if p.side.value == "LONG":
+                symbols[sym]["long"] += self._get_notional(p)
+            else:
+                symbols[sym]["short"] += self._get_notional(p)
+
+        symbol_exposures = {
+            sym: round((v["long"] + v["short"]) / equity_usd, 4) if equity_usd > 0 else 0.0
+            for sym, v in symbols.items()
+        }
+
+        return {
+            "long_notional_usd": round(long_notional, 2),
+            "short_notional_usd": round(short_notional, 2),
+            "total_notional_usd": round(total_notional, 2),
+            "net_notional_usd": round(net_notional, 2),
+            "net_exposure_pct": round(net_exposure_pct, 4),
+            "max_net_exposure_pct": self.config.max_net_exposure_pct,
+            "symbol_exposures": symbol_exposures,
+            "max_single_symbol_exposure_pct": self.config.max_single_symbol_exposure_pct,
+        }
+
     def get_portfolio_risk_summary(
         self, open_positions: List[Position], equity_usd: float
     ) -> dict:
