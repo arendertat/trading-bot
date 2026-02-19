@@ -13,7 +13,10 @@ class ExchangeConfig(BaseModel):
     api_secret_env: str = "BINANCE_API_SECRET"
     usdtm_perp: bool = True
     margin_mode: str = "ISOLATED"
-    recv_window_ms: int = Field(default=5000, gt=0, le=60000)
+    # Bulgu 12.2: Reduced upper bound from 60000 to 10000ms.
+    # Binance recommends 5000ms; large values widen the replay attack window.
+    recv_window_ms: int = Field(default=5000, gt=0, le=10000)
+    testnet: bool = False  # Use Binance Futures Testnet (https://testnet.binancefuture.com)
 
     @field_validator("margin_mode")
     @classmethod
@@ -65,6 +68,20 @@ class RiskConfig(BaseModel):
     pause_days_after_weekly_stop: int = Field(default=7, ge=1, le=30)
     reduced_risk_after_pause_pct: float = Field(default=0.005, gt=0, le=0.1)  # 0.005 = 0.5%
     reduced_risk_days: int = Field(default=3, ge=1, le=30)
+    # Volatility Regime Scaling (Özellik 10)
+    # HIGH_VOL'da risk per trade'i azalt
+    high_vol_risk_reduction_pct: float = Field(default=0.005, gt=0, le=0.1)  # 0.5%
+    # SL'den sonra aynı sembolde kaç 5m bar bekle (0 = devre dışı)
+    cooldown_after_sl_bars: int = Field(default=0, ge=0, le=50)
+    # Portfolio Exposure Monitor (Özellik 9)
+    # Net exposure = |long_notional - short_notional| / equity
+    # Default 2.0 = disabled in practice (allows up to 2x equity net exposure)
+    # Set to e.g. 0.8 to limit net directional bias to 80% of equity
+    max_net_exposure_pct: float = Field(default=2.0, ge=0.0, le=10.0)
+    # Single-symbol concentration limit (symbol_notional / equity)
+    # Default 1.0 = disabled in practice (allows full equity in one symbol)
+    # Set to e.g. 0.5 to limit any single symbol to 50% of equity
+    max_single_symbol_exposure_pct: float = Field(default=1.0, ge=0.0, le=5.0)
 
 
 class RegimeConfig(BaseModel):
@@ -75,6 +92,10 @@ class RegimeConfig(BaseModel):
     confidence_threshold: float = Field(default=0.55, ge=0.3, le=0.9)
     bb_width_range_min: Optional[float] = Field(default=0.01, ge=0, le=0.1)
     bb_width_range_max: Optional[float] = Field(default=0.05, ge=0, le=0.2)
+    # Adaptive Regime Parameters (Özellik 11)
+    # ADX eşikleri son 30 günlük ADX dağılımına göre otomatik ayarlanır
+    adaptive_regime: bool = False
+    adaptive_adx_window: int = Field(default=8640, ge=100, le=50000)  # 30d × 288 bar/gün
 
 
 class StrategyTrendPullbackConfig(BaseModel):
@@ -89,6 +110,13 @@ class StrategyTrendPullbackConfig(BaseModel):
     ema20_band_pct: float = Field(default=0.002, ge=0, le=0.05)
     trail_after_r: float = Field(default=1.0, ge=0, le=5.0)
     atr_trail_mult: float = Field(default=2.0, ge=0.5, le=10.0)
+    # ATR-based dynamic stop (Özellik 5)
+    dynamic_stop_enabled: bool = False
+    stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
+    # Order book imbalance confirmation (Özellik 12)
+    # When True, requires bid/ask imbalance aligned with trade direction
+    use_book_imbalance: bool = False
+    book_imbalance_threshold: float = Field(default=1.2, ge=1.0, le=5.0)
 
 
 class StrategyTrendBreakoutConfig(BaseModel):
@@ -98,6 +126,13 @@ class StrategyTrendBreakoutConfig(BaseModel):
     breakout_lookback_bars: int = Field(default=20, ge=5, le=100)
     breakout_volume_z_min: float = Field(default=1.0, ge=0, le=5.0)
     atr_trail_mult: float = Field(default=2.5, ge=0.5, le=10.0)
+    # ATR-based dynamic stop (Özellik 5)
+    dynamic_stop_enabled: bool = False
+    stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
+    # Order book imbalance confirmation (Özellik 12)
+    # When True, requires bid/ask imbalance aligned with trade direction
+    use_book_imbalance: bool = False
+    book_imbalance_threshold: float = Field(default=1.2, ge=1.0, le=5.0)
 
 
 class StrategyRangeMeanReversionConfig(BaseModel):
@@ -107,6 +142,9 @@ class StrategyRangeMeanReversionConfig(BaseModel):
     target_r_multiple: float = Field(default=1.2, ge=0.5, le=5.0)
     rsi_long_extreme: float = Field(default=25, ge=0, le=50)
     rsi_short_extreme: float = Field(default=75, ge=50, le=100)
+    # ATR-based dynamic stop (Özellik 5)
+    dynamic_stop_enabled: bool = False
+    stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
 
 
 class StrategiesConfig(BaseModel):
@@ -165,6 +203,13 @@ class NotificationConfig(BaseModel):
         return v
 
 
+class DashboardConfig(BaseModel):
+    """Web dashboard configuration (Özellik 4)"""
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = Field(default=8080, ge=1024, le=65535)
+
+
 class LoggingConfig(BaseModel):
     """Logging configuration"""
     log_dir: str = "./logs"
@@ -196,6 +241,7 @@ class BotConfig(BaseModel):
     performance: PerformanceConfig
     notifications: NotificationConfig
     logging: LoggingConfig
+    dashboard: DashboardConfig = DashboardConfig()
 
     @model_validator(mode="after")
     def validate_config(self):

@@ -1,0 +1,85 @@
+UNIVERSE SELECTION MODULE - FILE STRUCTURE
+===========================================
+
+bot/
+└── universe/                          [NEW MODULE]
+    ├── __init__.py                    Module initialization
+    ├── models.py                      SymbolEligibility dataclass
+    └── selector.py                    UniverseSelector class
+                                         - build_daily_universe()
+                                         - _apply_whitelist_blacklist()
+                                         - _evaluate_symbol()
+                                         - _calculate_atr_ratio()
+
+bot/exchange/
+└── binance_client.py                  [MODIFIED]
+                                       Added methods:
+                                         - list_usdtm_perp_symbols()
+                                         - fetch_24h_tickers()
+                                         - fetch_funding_rates()
+
+tests/
+└── test_universe.py                   [NEW - 25 test cases]
+                                       Test coverage:
+                                         - SymbolEligibility model
+                                         - Whitelist/blacklist filtering
+                                         - Volume/spread/funding/ATR filters
+                                         - Liquidity scoring
+                                         - Ranking and selection
+                                         - Edge cases
+
+examples/
+└── universe_example.py                [NEW - Standalone demo]
+
+Documentation:
+├── UNIVERSE_SELECTION_README.md       Complete module docs (300+ lines)
+├── MILESTONE_3_TASK_1_SUMMARY.md     Implementation summary
+├── TASK_1_COMPLETE.md                 Quick start guide
+└── DELIVERABLES_TASK_1.txt           This deliverables list
+
+Tools:
+├── run_universe_tests.sh              Test runner script
+└── verify_universe_module.py          Module verification script
+
+===========================================
+KEY INTERFACES
+===========================================
+
+UniverseSelector.build_daily_universe(now_utc: datetime) -> List[str]
+  INPUT:  datetime (for logging/versioning)
+  OUTPUT: List of top N eligible symbols (e.g., ['BTC/USDT', 'ETH/USDT', ...])
+  
+SymbolEligibility
+  Fields: symbol, pass_volume, pass_spread, pass_funding, pass_atr_ratio, score, reasons
+  Property: is_eligible (True if all filters pass)
+
+Exchange Client Extensions:
+  - list_usdtm_perp_symbols() -> List[str]
+  - fetch_24h_tickers(symbols) -> Dict[str, Dict]
+  - fetch_funding_rates(symbols) -> Dict[str, float]
+
+===========================================
+CONFIGURATION (from config.universe.*)
+===========================================
+
+min_24h_volume_usdt      100M minimum volume
+max_spread_pct           0.05% max spread
+max_abs_funding_rate     0.15% max funding rate
+min_atr_ratio            0.5% min ATR/price ratio
+max_monitored_symbols    6 top symbols to select
+whitelist                Optional symbol whitelist
+blacklist                Optional symbol blacklist
+
+===========================================
+TESTING
+===========================================
+
+Run tests:
+  $ ./run_universe_tests.sh
+  
+Expected output:
+  ======================== 25 passed in X.XXs ========================
+
+All tests use mocks (no network calls required)
+
+===========================================

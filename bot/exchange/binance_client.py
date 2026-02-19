@@ -1,8 +1,41 @@
 """Binance USDT-M Perpetual Futures REST client wrapper"""
 
+import random
 import time
 from typing import Optional, Dict, List, Any
 import logging
+
+
+def _jitter(max_seconds: float = 1.0) -> float:
+    """Bulgu 12.3: Return random jitter to prevent thundering herd on rate limit recovery."""
+    return random.uniform(0, max_seconds)
+
+
+def _validate_api_credentials(api_key: str, api_secret: str) -> None:
+    """
+    Bulgu 1.2: Basic format validation for Binance API credentials.
+
+    Binance API keys and secrets are 64-character alphanumeric strings.
+    This prevents obviously malformed credentials from being sent to the exchange
+    (which could leak key fragments in error responses).
+
+    Raises:
+        ValueError: If credentials fail basic format checks
+    """
+    import re
+    # Binance keys: exactly 64 alphanumeric characters
+    _BINANCE_KEY_PATTERN = re.compile(r'^[A-Za-z0-9]{64}$')
+
+    if not _BINANCE_KEY_PATTERN.match(api_key):
+        raise ValueError(
+            "API key format is invalid. "
+            "Binance API keys must be 64 alphanumeric characters."
+        )
+    if not _BINANCE_KEY_PATTERN.match(api_secret):
+        raise ValueError(
+            "API secret format is invalid. "
+            "Binance API secrets must be 64 alphanumeric characters."
+        )
 
 import ccxt
 
@@ -62,18 +95,29 @@ class BinanceFuturesClient:
         self.health_monitor = HealthMonitor(error_threshold=health_error_threshold)
 
         # Initialize ccxt client
-        self.exchange = ccxt.binance({
+        TESTNET_FAPI = 'https://testnet.binancefuture.com'
+        exchange_config = {
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
-            'options': {
-                'defaultType': 'future',  # USDT-M futures
-                'recvWindow': recv_window_ms,
-            }
-        })
-
+            'options': {'recvWindow': recv_window_ms},
+        }
         if testnet:
-            self.exchange.set_sandbox_mode(True)
+            # ccxt sandbox mode deprecated for Binance Futures;
+            # override URLs directly to testnet.binancefuture.com
+            # fetchCurrencies=False: testnet has no sapi endpoint, avoids auth error in load_markets
+            exchange_config['options']['fetchCurrencies'] = False
+            exchange_config['urls'] = {
+                'api': {
+                    'fapiPublic': f'{TESTNET_FAPI}/fapi/v1',
+                    'fapiPublicV2': f'{TESTNET_FAPI}/fapi/v2',
+                    'fapiPublicV3': f'{TESTNET_FAPI}/fapi/v3',
+                    'fapiPrivate': f'{TESTNET_FAPI}/fapi/v1',
+                    'fapiPrivateV2': f'{TESTNET_FAPI}/fapi/v2',
+                    'fapiPrivateV3': f'{TESTNET_FAPI}/fapi/v3',
+                }
+            }
+        self.exchange = ccxt.binanceusdm(exchange_config)
 
         # Initialize time synchronization
         try:
@@ -97,7 +141,22 @@ class BinanceFuturesClient:
                 f"{config.api_key_env}, {config.api_secret_env}"
             )
 
+        # Bulgu 1.2: Basic format validation — Binance keys are 64-char alphanumeric
+        _validate_api_credentials(api_key, api_secret)
+
         testnet = getattr(config, 'testnet', False)
+
+        # Bulgu 9.2: Live trading requires explicit env var confirmation
+        if not testnet:
+            live_confirmed = os.getenv("LIVE_TRADING_CONFIRMED", "").strip().lower()
+            if live_confirmed != "true":
+                raise ValueError(
+                    "LIVE TRADING IS NOT ENABLED.\n"
+                    "To trade with real money, set the environment variable:\n"
+                    "  LIVE_TRADING_CONFIRMED=true\n"
+                    "This is a safety measure to prevent accidental live trading."
+                )
+
         return cls(
             api_key=api_key,
             api_secret=api_secret,
@@ -107,11 +166,11 @@ class BinanceFuturesClient:
 
     def get_server_time_ms(self) -> int:
         """Get Binance server time in milliseconds"""
-        try:
-            response = self.exchange.fetch_time()
-            return int(response)
-        except Exception as e:
-            raise ExchangeError(f"Failed to fetch server time: {e}")
+        def _fetch():
+            return self.exchange.fetch_time()
+
+        response = self._retry_with_backoff(_fetch)
+        return int(response)
 
     def sync_time(self) -> None:
         """
@@ -158,28 +217,29 @@ class BinanceFuturesClient:
 
             except ccxt.DDoSProtection as e:
                 # Rate limit - wait and retry
-                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                logger.warning(f"Rate limit hit, waiting {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
+                wait_time = 2 ** attempt + _jitter()
+                logger.warning(f"Rate limit hit, waiting {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(wait_time)
-                last_exception = RateLimitError(f"Rate limit exceeded: {e}")
+                # Bulgu 9.1: Use exception type name only, not full message (may contain response body)
+                last_exception = RateLimitError(f"Rate limit exceeded: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
             except ccxt.RequestTimeout as e:
                 # Network timeout - retry with backoff
-                wait_time = 2 ** attempt
-                logger.warning(f"Request timeout, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
+                wait_time = 2 ** attempt + _jitter()
+                logger.warning(f"Request timeout, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(wait_time)
-                last_exception = ExchangeError(f"Request timeout: {e}")
+                last_exception = ExchangeError(f"Request timeout: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
             except ccxt.ExchangeNotAvailable as e:
                 # Exchange down - retry with backoff
-                wait_time = 2 ** attempt
-                logger.warning(f"Exchange unavailable, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
+                wait_time = 2 ** attempt + _jitter()
+                logger.warning(f"Exchange unavailable, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(wait_time)
-                last_exception = ExchangeError(f"Exchange not available: {e}")
+                last_exception = ExchangeError(f"Exchange not available: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
@@ -190,28 +250,30 @@ class BinanceFuturesClient:
                     self.exchange.load_time_difference()
                     logger.debug("Time difference loaded successfully")
                 except Exception as sync_error:
-                    logger.error(f"Time sync failed during retry: {sync_error}")
-                last_exception = TimestampError(f"Timestamp error: {e}")
+                    logger.error(f"Time sync failed during retry: {type(sync_error).__name__}")
+                last_exception = TimestampError(f"Timestamp error: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
             except ccxt.AuthenticationError as e:
                 # Auth error - not retryable
-                auth_error = AuthError(f"Authentication failed: {e}")
+                # Bulgu 9.1: Do not include full exchange response in error message
+                auth_error = AuthError(f"Authentication failed: {type(e).__name__}")
+                logger.error("Authentication error — check API key/secret validity")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(auth_error)
                 raise auth_error
 
             except ccxt.InsufficientFunds as e:
                 # Insufficient balance - not retryable
-                balance_error = InsufficientBalanceError(f"Insufficient balance: {e}")
+                balance_error = InsufficientBalanceError(f"Insufficient balance: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(balance_error)
                 raise balance_error
 
             except ccxt.OrderNotFound as e:
                 # Order not found - not retryable
-                not_found_error = OrderNotFoundError(f"Order not found: {e}")
+                not_found_error = OrderNotFoundError(f"Order not found: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(not_found_error)
                 raise not_found_error
@@ -221,19 +283,19 @@ class BinanceFuturesClient:
                 error_msg = str(e).lower()
                 if 'timestamp' in error_msg or 'recvwindow' in error_msg:
                     # Timestamp-related error - sync time and retry immediately
-                    logger.warning(f"Timestamp-related error detected, syncing time (attempt {attempt + 1}/{self.max_retries}): {e}")
+                    logger.warning(f"Timestamp-related error detected, syncing time (attempt {attempt + 1}/{self.max_retries})")
                     try:
                         self.exchange.load_time_difference()
                         logger.debug("Time difference loaded successfully")
                     except Exception as sync_error:
-                        logger.error(f"Time sync failed during retry: {sync_error}")
-                    last_exception = TimestampError(f"Timestamp error: {e}")
+                        logger.error(f"Time sync failed during retry: {type(sync_error).__name__}")
+                    last_exception = TimestampError(f"Timestamp error: {type(e).__name__}")
                 else:
-                    # Unknown error - log and retry with backoff
-                    logger.error(f"Unexpected error: {e} (attempt {attempt + 1}/{self.max_retries})")
-                    wait_time = 2 ** attempt
+                    # Unknown error - log type only to avoid leaking exchange response body
+                    logger.error(f"Unexpected error: {type(e).__name__} (attempt {attempt + 1}/{self.max_retries})")
+                    wait_time = 2 ** attempt + _jitter()
                     time.sleep(wait_time)
-                    last_exception = ExchangeError(f"Unexpected error: {e}")
+                    last_exception = ExchangeError(f"Unexpected error: {type(e).__name__}")
                 # Fix #4: Record failure in health monitor
                 self.health_monitor.record_failure(last_exception)
 
@@ -316,13 +378,22 @@ class BinanceFuturesClient:
             Dict with keys: total, free, used
         """
         def _fetch():
-            balance = self.exchange.fetch_balance({'type': 'future'})
-            usdt_balance = balance.get('USDT', {})
-            return {
-                'total': float(usdt_balance.get('total', 0)),
-                'free': float(usdt_balance.get('free', 0)),
-                'used': float(usdt_balance.get('used', 0)),
-            }
+            if self.testnet:
+                # Demo/testnet: use fapiPrivateV2 balance endpoint directly
+                # to avoid ccxt routing to spot sapi endpoint first
+                response = self.exchange.fapiPrivateV2GetBalance()
+                usdt = next((a for a in response if a.get('asset') == 'USDT'), {})
+                total = float(usdt.get('balance', 0))
+                free = float(usdt.get('availableBalance', 0))
+                return {'total': total, 'free': free, 'used': total - free}
+            else:
+                balance = self.exchange.fetch_balance({'type': 'future'})
+                usdt_balance = balance.get('USDT', {})
+                return {
+                    'total': float(usdt_balance.get('total', 0)),
+                    'free': float(usdt_balance.get('free', 0)),
+                    'used': float(usdt_balance.get('used', 0)),
+                }
 
         return self._retry_with_backoff(_fetch)
 
@@ -550,3 +621,131 @@ class BinanceFuturesClient:
             return result if isinstance(result, list) else [result]
 
         return self._retry_with_backoff(_cancel_all)
+
+    def list_usdtm_perp_symbols(self) -> List[str]:
+        """
+        List all available USDT-M perpetual symbols.
+
+        Returns:
+            List of symbol names (e.g., ["BTC/USDT", "ETH/USDT"])
+        """
+        def _list():
+            markets = self.exchange.load_markets()
+            # Filter for USDT-M perpetuals
+            symbols = [
+                symbol for symbol, market in markets.items()
+                if market.get('type') in ('swap', 'future')
+                and market.get('linear') is True
+                and market.get('settle') == 'USDT'
+                and market.get('active') is True
+                and ':' in symbol  # perpetual format BTC/USDT:USDT
+                and '-' not in symbol  # exclude dated futures like BTC/USDT:USDT-260327
+            ]
+            logger.info(f"Found {len(symbols)} USDT-M perpetual symbols")
+            return symbols
+
+        return self._retry_with_backoff(_list)
+
+    def fetch_24h_tickers(self, symbols: Optional[List[str]] = None) -> Dict[str, Dict]:
+        """
+        Fetch 24h ticker data for symbols.
+
+        Args:
+            symbols: List of symbols (None = all)
+
+        Returns:
+            Dict mapping symbol -> {quote_volume_usdt, bid, ask, ...}
+        """
+        def _fetch():
+            # Always use batch fetch for performance, then filter
+            all_tickers = self.exchange.fetch_tickers()
+            result = {
+                symbol: {
+                    'quote_volume_usdt': float(ticker.get('quoteVolume', 0)),
+                    'bid': float(ticker.get('bid', 0)) if ticker.get('bid') else None,
+                    'ask': float(ticker.get('ask', 0)) if ticker.get('ask') else None,
+                    'last': float(ticker.get('last', 0)),
+                }
+                for symbol, ticker in all_tickers.items()
+            }
+            if symbols:
+                return {s: result[s] for s in symbols if s in result}
+            return result
+
+        return self._retry_with_backoff(_fetch)
+
+    def fetch_order_book(self, symbol: str, limit: int = 20) -> Dict[str, float]:
+        """
+        Fetch order book depth and compute bid/ask imbalance ratio (Özellik 12).
+
+        Imbalance ratio = total_bid_size / total_ask_size
+        - ratio > 1: more buy pressure (bullish bias)
+        - ratio < 1: more sell pressure (bearish bias)
+        - ratio = 1: balanced book
+
+        Args:
+            symbol: Trading pair (e.g., "BTC/USDT")
+            limit: Order book depth (number of levels per side, default 20)
+
+        Returns:
+            Dict with keys:
+                bid_volume: Total bid size across `limit` levels
+                ask_volume: Total ask size across `limit` levels
+                imbalance_ratio: bid_volume / ask_volume (0 if ask_volume == 0)
+                best_bid: Best bid price
+                best_ask: Best ask price
+        """
+        def _fetch():
+            ob = self.exchange.fetch_order_book(symbol, limit=limit)
+            bids = ob.get("bids", [])  # [[price, size], ...]
+            asks = ob.get("asks", [])
+
+            bid_vol = sum(b[1] for b in bids if len(b) >= 2)
+            ask_vol = sum(a[1] for a in asks if len(a) >= 2)
+            ratio = bid_vol / ask_vol if ask_vol > 0 else 0.0
+
+            best_bid = bids[0][0] if bids else 0.0
+            best_ask = asks[0][0] if asks else 0.0
+
+            return {
+                "bid_volume": bid_vol,
+                "ask_volume": ask_vol,
+                "imbalance_ratio": ratio,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+            }
+
+        return self._retry_with_backoff(_fetch)
+
+    def fetch_funding_rates(self, symbols: List[str]) -> Dict[str, float]:
+        """
+        Fetch current funding rates for multiple symbols.
+
+        Args:
+            symbols: List of symbols
+
+        Returns:
+            Dict mapping symbol -> funding_rate
+        """
+        def _fetch():
+            # Batch fetch all funding rates, then filter
+            try:
+                all_rates = self.exchange.fetch_funding_rates()
+                return {
+                    symbol: float(all_rates[symbol]['fundingRate'])
+                    if symbol in all_rates else 0.0
+                    for symbol in symbols
+                }
+            except Exception as e:
+                logger.warning(f"Batch funding rate fetch failed, falling back to per-symbol: {e}")
+                rates = {}
+                for symbol in symbols:
+                    try:
+                        funding = self.exchange.fetch_funding_rate(symbol)
+                        rates[symbol] = float(funding['fundingRate'])
+                    except Exception as e2:
+                        logger.warning(f"Failed to fetch funding rate for {symbol}: {e2}")
+                        rates[symbol] = 0.0
+                return rates
+
+        return self._retry_with_backoff(_fetch)

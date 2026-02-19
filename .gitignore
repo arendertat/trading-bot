@@ -43,6 +43,9 @@ htmlcov/
 # Environment variables
 .env
 
+# Bot configuration (may contain sensitive trading parameters)
+config/config.json
+
 # Logs
 logs/
 *.log

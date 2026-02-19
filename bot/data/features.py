@@ -47,9 +47,24 @@ def rsi(series: pd.Series, period: int = 14) -> Optional[pd.Series]:
     avg_gains = gains.ewm(span=period, adjust=False).mean()
     avg_losses = losses.ewm(span=period, adjust=False).mean()
 
-    # Avoid division by zero
+    # Reset index to avoid duplicate-label issues (timestamps may not be unique)
+    avg_gains = avg_gains.reset_index(drop=True)
+    avg_losses = avg_losses.reset_index(drop=True)
+
+    # Vectorized RS calculation: handle division by zero
+    # Where avg_losses == 0 and avg_gains == 0 → NaN (flat)
+    # Where avg_losses == 0 and avg_gains > 0 → inf (RSI=100)
+    # Normal: avg_gains / avg_losses
     rs = avg_gains / avg_losses.replace(0, np.nan)
+
     rsi_values = 100 - (100 / (1 + rs))
+
+    # avg_gains > 0 but avg_losses == 0 → rs=inf → 100 - (100/inf) = 100
+    # avg_gains == 0 and avg_losses == 0 → rs=nan → NaN (fine, no signal)
+    rsi_values = rsi_values.replace([np.inf, -np.inf], 100)
+
+    # Restore original index
+    rsi_values.index = series.index
 
     return rsi_values
 

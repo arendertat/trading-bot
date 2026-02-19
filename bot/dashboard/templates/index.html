@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trading Bot Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --card: #1a1d27;
+      --border: #2a2d3a;
+      --text: #e2e8f0;
+      --muted: #8892a4;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #f59e0b;
+      --blue: #3b82f6;
+      --purple: #8b5cf6;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Header ─────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+    }
+    header h1 { font-size: 18px; font-weight: 600; letter-spacing: .5px; }
+    #status-bar { display: flex; gap: 12px; align-items: center; font-size: 13px; }
+    .badge {
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: 12px;
+    }
+    .badge-ok   { background: rgba(34,197,94,.15);  color: var(--green); }
+    .badge-warn { background: rgba(245,158,11,.15); color: var(--yellow);}
+    .badge-err  { background: rgba(239,68,68,.15);  color: var(--red);  }
+    #last-update { color: var(--muted); font-size: 12px; }
+
+    /* ── Layout ─────────────────────────────── */
+    main { padding: 20px 24px; display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── KPI strip ─────────────────────────── */
+    .kpi-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    .kpi {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .kpi-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+    .kpi-value { font-size: 26px; font-weight: 700; margin-top: 4px; }
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+    .neu { color: var(--text); }
+
+    /* ── Cards ─────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 20px;
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    /* ── Two-column row ─────────────────────── */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* ── Chart ──────────────────────────────── */
+    .chart-wrap { position: relative; height: 220px; }
+
+    /* ── Tables ─────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th {
+      text-align: left;
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 12px;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 8px 10px; border-bottom: 1px solid rgba(42,45,58,.6); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.03); }
+    .symbol { font-weight: 600; }
+    .side-long  { color: var(--green); font-weight: 600; }
+    .side-short { color: var(--red);   font-weight: 600; }
+    .reason-tp    { color: var(--green); }
+    .reason-sl    { color: var(--red); }
+    .reason-trail { color: var(--yellow); }
+
+    /* ── Performance bars ────────────────────── */
+    .perf-row { display: flex; flex-direction: column; gap: 10px; }
+    .perf-item { display: flex; flex-direction: column; gap: 4px; }
+    .perf-name { font-weight: 600; font-size: 13px; }
+    .perf-meta { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
+    .bar-bg { background: var(--border); border-radius: 4px; height: 6px; }
+    .bar-fill { height: 6px; border-radius: 4px; transition: width .4s ease; }
+
+    /* ── Regime pie ─────────────────────────── */
+    .pie-wrap { position: relative; height: 180px; }
+
+    /* ── Empty state ─────────────────────────── */
+    .empty { color: var(--muted); font-size: 13px; padding: 12px 0; text-align: center; }
+
+    /* ── Scrollable table wrapper ────────────── */
+    .table-scroll { max-height: 300px; overflow-y: auto; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>⚡ Trading Bot</h1>
+  <div id="status-bar">
+    <span id="badge-ks" class="badge badge-ok">Kill Switch: OFF</span>
+    <span id="badge-sm" class="badge badge-ok">Safe Mode: OFF</span>
+    <span id="badge-pos" class="badge badge-ok">0 Positions</span>
+    <span id="last-update">–</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- KPI strip -->
+  <div class="kpi-strip">
+    <div class="kpi">
+      <div class="kpi-label">PnL Today</div>
+      <div class="kpi-value neu" id="kpi-today">–</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">PnL This Week</div>
+      <div class="kpi-value neu" id="kpi-week">–</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Total Trades (30d)</div>
+      <div class="kpi-value neu" id="kpi-trades">–</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Win Rate (30d)</div>
+      <div class="kpi-value neu" id="kpi-winrate">–</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Open Notional</div>
+      <div class="kpi-value neu" id="kpi-notional">–</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Unrealized PnL</div>
+      <div class="kpi-value neu" id="kpi-unrealized">–</div>
+    </div>
+  </div>
+
+  <!-- Equity curve -->
+  <div class="card">
+    <div class="card-title">Equity Curve — Cumulative PnL (30d)</div>
+    <div class="chart-wrap">
+      <canvas id="equityChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Open positions + Strategy performance -->
+  <div class="two-col">
+
+    <div class="card">
+      <div class="card-title">Open Positions</div>
+      <div class="table-scroll">
+        <table id="pos-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Stop</th>
+              <th>Unreal. PnL</th>
+              <th>Hold</th>
+              <th>Strategy</th>
+            </tr>
+          </thead>
+          <tbody id="pos-body">
+            <tr><td colspan="7" class="empty">No open positions</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Strategy Performance</div>
+      <div class="perf-row" id="perf-rows">
+        <div class="empty">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Recent trades + Exit reason dist -->
+  <div class="two-col">
+
+    <div class="card">
+      <div class="card-title">Recent Closed Trades</div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>PnL USD</th>
+              <th>R</th>
+              <th>Reason</th>
+              <th>Strategy</th>
+              <th>Exit Time</th>
+            </tr>
+          </thead>
+          <tbody id="trades-body">
+            <tr><td colspan="7" class="empty">No trades yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Exit Reason Distribution</div>
+      <div class="pie-wrap">
+        <canvas id="exitChart"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<script>
+// ── Chart instances ─────────────────────────────────────────────
+let equityChart = null;
+let exitChart = null;
+
+// ── Helpers ────────────────────────────────────────────────────
+const fmt = (n, dec=2) => n == null ? '–' : Number(n).toFixed(dec);
+const fmtPnl = (n) => {
+  if (n == null) return '–';
+  const s = (n >= 0 ? '+$' : '-$') + Math.abs(n).toFixed(2);
+  return s;
+};
+const cls = (n) => n == null ? 'neu' : (n > 0 ? 'pos' : (n < 0 ? 'neg' : 'neu'));
+const sideCls = (s) => s === 'LONG' ? 'side-long' : 'side-short';
+const reasonCls = (r) => {
+  if (!r) return '';
+  if (r === 'TP') return 'reason-tp';
+  if (r === 'SL') return 'reason-sl';
+  if (r === 'TRAIL') return 'reason-trail';
+  return '';
+};
+const fmtTime = (iso) => {
+  if (!iso) return '–';
+  try { return new Date(iso).toLocaleString('en-GB', {month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+  catch { return iso; }
+};
+
+// ── Fetch wrapper ───────────────────────────────────────────────
+async function apiFetch(path) {
+  try {
+    const r = await fetch('/api' + path);
+    if (!r.ok) throw new Error(r.status);
+    return await r.json();
+  } catch(e) {
+    console.warn('API error', path, e);
+    return null;
+  }
+}
+
+// ── Status badges ───────────────────────────────────────────────
+async function refreshStatus() {
+  const d = await apiFetch('/status');
+  if (!d) return;
+
+  const bKs = document.getElementById('badge-ks');
+  if (d.kill_switch_active) {
+    bKs.textContent = 'Kill Switch: ON';
+    bKs.className = 'badge badge-err';
+  } else {
+    bKs.textContent = 'Kill Switch: OFF';
+    bKs.className = 'badge badge-ok';
+  }
+
+  const bSm = document.getElementById('badge-sm');
+  if (d.safe_mode_active) {
+    bSm.textContent = 'Safe Mode: ON';
+    bSm.className = 'badge badge-warn';
+  } else {
+    bSm.textContent = 'Safe Mode: OFF';
+    bSm.className = 'badge badge-ok';
+  }
+
+  const bPos = document.getElementById('badge-pos');
+  bPos.textContent = d.open_positions + ' Position' + (d.open_positions !== 1 ? 's' : '');
+  bPos.className = d.open_positions > 0 ? 'badge badge-warn' : 'badge badge-ok';
+
+  document.getElementById('last-update').textContent =
+    'Updated ' + new Date().toLocaleTimeString();
+}
+
+// ── Summary KPIs ────────────────────────────────────────────────
+async function refreshSummary() {
+  const d = await apiFetch('/summary?days=30');
+  if (!d) return;
+
+  const setKpi = (id, val) => {
+    const el = document.getElementById(id);
+    el.textContent = fmtPnl(val);
+    el.className = 'kpi-value ' + cls(val);
+  };
+  setKpi('kpi-today', d.pnl_today_usd);
+  setKpi('kpi-week',  d.pnl_week_usd);
+
+  const ps = d.pnl_summary || {};
+  document.getElementById('kpi-trades').textContent = ps.total_trades ?? '–';
+
+  const wr = ps.win_rate;
+  const wrEl = document.getElementById('kpi-winrate');
+  wrEl.textContent = wr != null ? (wr * 100).toFixed(1) + '%' : '–';
+  wrEl.className = 'kpi-value ' + (wr >= 0.5 ? 'pos' : 'neg');
+
+  const st = d.state || {};
+  const notEl = document.getElementById('kpi-notional');
+  notEl.textContent = st.total_open_notional_usd != null
+    ? '$' + Number(st.total_open_notional_usd).toFixed(0)
+    : '–';
+
+  const unrEl = document.getElementById('kpi-unrealized');
+  const unr = st.total_unrealized_pnl;
+  unrEl.textContent = fmtPnl(unr);
+  unrEl.className = 'kpi-value ' + cls(unr);
+}
+
+// ── Equity curve ─────────────────────────────────────────────────
+async function refreshEquity() {
+  const d = await apiFetch('/equity?days=30');
+  if (!d || !d.points) return;
+
+  const labels = d.points.map(p => fmtTime(p.time));
+  const values = d.points.map(p => p.cumulative_pnl_usd);
+
+  const color = (d.total_pnl_usd || 0) >= 0
+    ? 'rgba(34,197,94,1)'
+    : 'rgba(239,68,68,1)';
+  const colorFill = (d.total_pnl_usd || 0) >= 0
+    ? 'rgba(34,197,94,0.12)'
+    : 'rgba(239,68,68,0.12)';
+
+  if (equityChart) {
+    equityChart.data.labels = labels;
+    equityChart.data.datasets[0].data = values;
+    equityChart.data.datasets[0].borderColor = color;
+    equityChart.data.datasets[0].backgroundColor = colorFill;
+    equityChart.update('none');
+    return;
+  }
+
+  const ctx = document.getElementById('equityChart').getContext('2d');
+  equityChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Cumulative PnL ($)',
+        data: values,
+        borderColor: color,
+        backgroundColor: colorFill,
+        borderWidth: 2,
+        pointRadius: 2,
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ' $' + ctx.parsed.y.toFixed(2)
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8892a4', maxTicksLimit: 8 }, grid: { color: 'rgba(42,45,58,.5)' } },
+        y: { ticks: { color: '#8892a4', callback: v => '$' + v }, grid: { color: 'rgba(42,45,58,.5)' } }
+      }
+    }
+  });
+}
+
+// ── Open positions ───────────────────────────────────────────────
+async function refreshPositions() {
+  const positions = await apiFetch('/positions');
+  const tbody = document.getElementById('pos-body');
+  if (!positions || !positions.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No open positions</td></tr>';
+    return;
+  }
+  tbody.innerHTML = positions.map(p => `
+    <tr>
+      <td class="symbol">${p.symbol}</td>
+      <td class="${sideCls(p.side)}">${p.side}</td>
+      <td>${fmt(p.entry_price, 4)}</td>
+      <td>${fmt(p.stop_price, 4)}</td>
+      <td class="${cls(p.unrealized_pnl_usd)}">${fmtPnl(p.unrealized_pnl_usd)}</td>
+      <td>${p.holding_minutes}m</td>
+      <td>${p.strategy ?? '–'}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Recent trades ─────────────────────────────────────────────────
+async function refreshTrades() {
+  const trades = await apiFetch('/trades?days=7&limit=30');
+  const tbody = document.getElementById('trades-body');
+  if (!trades || !trades.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No closed trades in last 7 days</td></tr>';
+    return;
+  }
+  tbody.innerHTML = trades.map(t => `
+    <tr>
+      <td class="symbol">${t.symbol ?? '–'}</td>
+      <td class="${sideCls(t.side)}">${t.side ?? '–'}</td>
+      <td class="${cls(t.realized_pnl_usd)}">${fmtPnl(t.realized_pnl_usd)}</td>
+      <td class="${cls(t.pnl_r)}">${t.pnl_r != null ? (t.pnl_r >= 0 ? '+' : '') + fmt(t.pnl_r, 2) + 'R' : '–'}</td>
+      <td class="${reasonCls(t.exit_reason)}">${t.exit_reason ?? '–'}</td>
+      <td>${t.strategy ?? '–'}</td>
+      <td>${fmtTime(t.exit_time)}</td>
+    </tr>
+  `).join('');
+
+  // Also update exit reason pie
+  const counts = {};
+  trades.forEach(t => {
+    const r = t.exit_reason || 'UNKNOWN';
+    counts[r] = (counts[r] || 0) + 1;
+  });
+  updateExitPie(counts);
+}
+
+// ── Exit reason pie ───────────────────────────────────────────────
+function updateExitPie(counts) {
+  const labels = Object.keys(counts);
+  const values = Object.values(counts);
+  const colors = {
+    TP: 'rgba(34,197,94,0.8)',
+    SL: 'rgba(239,68,68,0.8)',
+    TRAIL: 'rgba(245,158,11,0.8)',
+    KILL_SWITCH: 'rgba(139,92,246,0.8)',
+    MANUAL: 'rgba(59,130,246,0.8)',
+    UNKNOWN: 'rgba(136,146,164,0.8)',
+  };
+  const bgColors = labels.map(l => colors[l] || 'rgba(136,146,164,0.8)');
+
+  if (exitChart) {
+    exitChart.data.labels = labels;
+    exitChart.data.datasets[0].data = values;
+    exitChart.data.datasets[0].backgroundColor = bgColors;
+    exitChart.update('none');
+    return;
+  }
+
+  const ctx = document.getElementById('exitChart').getContext('2d');
+  exitChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: bgColors, borderWidth: 0 }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: { color: '#e2e8f0', font: { size: 12 }, padding: 12 }
+        }
+      }
+    }
+  });
+}
+
+// ── Strategy performance ─────────────────────────────────────────
+async function refreshPerformance() {
+  const d = await apiFetch('/performance');
+  const container = document.getElementById('perf-rows');
+  if (!d || !d.strategies || !Object.keys(d.strategies).length) {
+    container.innerHTML = '<div class="empty">No strategy data yet</div>';
+    return;
+  }
+
+  const html = Object.entries(d.strategies).map(([name, m]) => {
+    const wr = m.win_rate != null ? (m.win_rate * 100).toFixed(1) + '%' : '–';
+    const exp = m.expectancy_r != null
+      ? (m.expectancy_r >= 0 ? '+' : '') + m.expectancy_r.toFixed(2) + 'R'
+      : '–';
+    const conf = m.confidence != null ? m.confidence : 0;
+    const confPct = (conf * 100).toFixed(0);
+    const barColor = conf >= 0.6 ? 'var(--green)' : (conf >= 0.4 ? 'var(--yellow)' : 'var(--red)');
+
+    return `
+      <div class="perf-item">
+        <div class="perf-name">${name}</div>
+        <div class="perf-meta">
+          <span>Trades: ${m.total_trades ?? 0}</span>
+          <span>WR: ${wr}</span>
+          <span>Exp: ${exp}</span>
+          <span>Conf: ${confPct}%</span>
+          ${m.note ? '<span style="color:var(--yellow)">' + m.note + '</span>' : ''}
+        </div>
+        <div class="bar-bg">
+          <div class="bar-fill" style="width:${confPct}%; background:${barColor}"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = html;
+}
+
+// ── Full refresh ─────────────────────────────────────────────────
+async function refreshAll() {
+  await Promise.all([
+    refreshStatus(),
+    refreshSummary(),
+    refreshEquity(),
+    refreshPositions(),
+    refreshTrades(),
+    refreshPerformance(),
+  ]);
+}
+
+// ── Boot ─────────────────────────────────────────────────────────
+refreshAll();
+// Poll every 30 seconds
+setInterval(refreshAll, 30_000);
+// Positions refresh more often (10s)
+setInterval(() => { refreshPositions(); refreshStatus(); }, 10_000);
+</script>
+</body>
+</html>
