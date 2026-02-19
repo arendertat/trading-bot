@@ -49,6 +49,11 @@ class ExitStats:
     avg_r: float = 0.0
     avg_pnl_usd: float = 0.0
     pct_of_trades: float = 0.0
+    avg_mae_usd: float = 0.0
+    avg_mfe_usd: float = 0.0
+    avg_mae_r: float = 0.0
+    avg_mfe_r: float = 0.0
+    avg_mfe_capture_pct: float = 0.0
 
 
 @dataclass
@@ -58,6 +63,7 @@ class MAEMFEStats:
     avg_mfe_usd: float = 0.0       # avg best unrealised profit during trade
     avg_mae_r: float = 0.0         # MAE expressed as R-multiple
     avg_mfe_r: float = 0.0         # MFE expressed as R-multiple
+    avg_mae_mfe_ratio: float = 0.0 # |MAE| / MFE (entry quality)
     # For winning trades: how much of MFE did they actually capture?
     avg_mfe_capture_pct: float = 0.0   # pnl_usd / mfe_usd (only for MFE > 0)
     # For losing trades: how deep did they go before stopping out?
@@ -115,6 +121,12 @@ class BacktestReport:
 
     # MAE/MFE analysis
     mae_mfe: MAEMFEStats = field(default_factory=MAEMFEStats)
+
+    # Entry quality
+    early_reversal_pct: float = 0.0
+    early_reversal_count: int = 0
+    early_reversal_threshold_r: float = -0.5
+    early_window_bars: int = 3
 
     # Time analysis
     time_stats: TimeStats = field(default_factory=TimeStats)
@@ -179,7 +191,8 @@ class BacktestReport:
             if es and es.count > 0:
                 print(
                     f"    {reason:<6}  count={es.count:>4}  ({es.pct_of_trades:>5.1%})  "
-                    f"avg_R={es.avg_r:>+6.3f}R  avg_PnL={es.avg_pnl_usd:>+8.2f} USD"
+                    f"avg_R={es.avg_r:>+6.3f}R  avg_PnL={es.avg_pnl_usd:>+8.2f} USD  "
+                    f"MAE={es.avg_mae_r:>+6.2f}R  MFE={es.avg_mfe_r:>+6.2f}R"
                 )
         print(sep)
 
@@ -188,6 +201,8 @@ class BacktestReport:
         print(f"  ENTRY QUALITY (MAE/MFE):")
         print(f"    Avg MAE:          {m.avg_mae_usd:>+10.2f} USD  ({m.avg_mae_r:>+6.3f}R)")
         print(f"    Avg MFE:          {m.avg_mfe_usd:>+10.2f} USD  ({m.avg_mfe_r:>+6.3f}R)")
+        if m.avg_mae_mfe_ratio > 0:
+            print(f"    MAE/MFE ratio:    {m.avg_mae_mfe_ratio:>10.2f}  ← lower is better")
         print(f"    MFE capture (win):{m.avg_mfe_capture_pct:>10.1%}  ← how much profit was taken")
         print(f"    SL efficiency:    {m.avg_sl_efficiency:>10.2f}x  ← 1.0 = stop hit at exactly risk")
         print(sep)
@@ -261,6 +276,13 @@ class BacktestReport:
 
         print(f"  Signals: {self.total_signals}  |  Entries: {self.total_entries}  |  "
               f"Rejected: {self.rejected_risk}  |  Bars: {self.total_bars:,}")
+        if self.early_reversal_count > 0:
+            print(
+                f"  Early reversals: {self.early_reversal_count} "
+                f"({self.early_reversal_pct:.1%})  "
+                f"threshold={self.early_reversal_threshold_r:+.2f}R "
+                f"window={self.early_window_bars} bars"
+            )
         print(sep)
         print()
 
@@ -326,11 +348,30 @@ def build_report(result: BacktestResult) -> BacktestReport:
     for reason in ["SL", "TP", "TRAIL", "EOD"]:
         group = [t for t in trades if t.exit_reason == reason]
         if group:
+            mfe_vals = [t.max_favourable_excursion for t in group]
+            mae_vals = [t.max_adverse_excursion for t in group]
+            mfe_r_vals = [
+                (t.max_favourable_excursion / t.risk_usd) if t.risk_usd > 0 else 0.0
+                for t in group
+            ]
+            mae_r_vals = [
+                (t.max_adverse_excursion / t.risk_usd) if t.risk_usd > 0 else 0.0
+                for t in group
+            ]
+            mfe_capture_vals = [
+                (t.pnl_usd / t.max_favourable_excursion) if t.max_favourable_excursion > 0 else 0.0
+                for t in group
+            ]
             exit_stats[reason] = ExitStats(
                 count=len(group),
                 avg_r=sum(t.pnl_r for t in group) / len(group),
                 avg_pnl_usd=sum(t.pnl_usd for t in group) / len(group),
                 pct_of_trades=len(group) / total_trades if total_trades > 0 else 0.0,
+                avg_mae_usd=sum(mae_vals) / len(mae_vals) if mae_vals else 0.0,
+                avg_mfe_usd=sum(mfe_vals) / len(mfe_vals) if mfe_vals else 0.0,
+                avg_mae_r=sum(mae_r_vals) / len(mae_r_vals) if mae_r_vals else 0.0,
+                avg_mfe_r=sum(mfe_r_vals) / len(mfe_r_vals) if mfe_r_vals else 0.0,
+                avg_mfe_capture_pct=sum(mfe_capture_vals) / len(mfe_capture_vals) if mfe_capture_vals else 0.0,
             )
 
     # ── MAE/MFE analysis ──────────────────────────────────────────────
@@ -347,6 +388,14 @@ def build_report(result: BacktestResult) -> BacktestReport:
         max_consec_losses, max_consec_wins,
         avg_consec_losses, worst_streak_pnl
     ) = _compute_streaks(trades)
+
+    # ── Entry quality: early reversal rate ────────────────────────────
+    early_window_bars = trades[0].early_window_bars if trades else 3
+    early_threshold_r = -0.5
+    early_reversal_count = sum(
+        1 for t in trades if t.early_mae_r <= early_threshold_r
+    )
+    early_reversal_pct = early_reversal_count / total_trades if total_trades > 0 else 0.0
 
     # ── Kill switch estimation ─────────────────────────────────────────
     # Count gaps > 5 days between consecutive trades (indicates pause period)
@@ -425,6 +474,10 @@ def build_report(result: BacktestResult) -> BacktestReport:
         avg_consecutive_losses=avg_consec_losses,
         worst_loss_streak_pnl_usd=worst_streak_pnl,
         kill_switch_blocks=kill_switch_blocks,
+        early_reversal_pct=early_reversal_pct,
+        early_reversal_count=early_reversal_count,
+        early_reversal_threshold_r=early_threshold_r,
+        early_window_bars=early_window_bars,
         by_strategy=by_strategy,
         by_regime=by_regime,
         symbols=result.symbols,
@@ -509,6 +562,7 @@ def _compute_mae_mfe(trades: List[BacktestTrade]) -> MAEMFEStats:
 
     avg_mae_usd = sum(maes) / len(maes)
     avg_mfe_usd = sum(mfes) / len(mfes)
+    avg_mae_mfe_ratio = abs(avg_mae_usd) / avg_mfe_usd if avg_mfe_usd > 0 else 0.0
 
     # R-multiples: MAE/risk and MFE/risk
     mae_r_vals = [
@@ -542,6 +596,7 @@ def _compute_mae_mfe(trades: List[BacktestTrade]) -> MAEMFEStats:
         avg_mfe_usd=avg_mfe_usd,
         avg_mae_r=avg_mae_r,
         avg_mfe_r=avg_mfe_r,
+        avg_mae_mfe_ratio=avg_mae_mfe_ratio,
         avg_mfe_capture_pct=avg_mfe_capture,
         avg_sl_efficiency=avg_sl_eff,
     )

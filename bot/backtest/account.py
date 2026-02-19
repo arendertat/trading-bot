@@ -40,6 +40,12 @@ class BacktestTrade:
     tp_price: Optional[float]
     max_adverse_excursion: float = 0.0   # Worst unrealised loss during trade
     max_favourable_excursion: float = 0.0  # Best unrealised profit during trade
+    # Early window stats (first N bars after entry)
+    early_window_bars: int = 0
+    early_mae_usd: float = 0.0
+    early_mfe_usd: float = 0.0
+    early_mae_r: float = 0.0
+    early_mfe_r: float = 0.0
 
 
 @dataclass
@@ -66,6 +72,12 @@ class OpenBacktestPosition:
     fees_usd: float = 0.0
     max_adverse_excursion: float = 0.0
     max_favourable_excursion: float = 0.0
+    # Early window tracking (first N bars after entry)
+    early_window_bars: int = 3
+    early_bars_count: int = 0
+    early_mae_usd: float = 0.0
+    early_mfe_usd: float = 0.0
+    last_bar_ts: Optional[int] = None
 
     def unrealised_pnl(self, current_price: float) -> float:
         if self.side == OrderSide.LONG:
@@ -271,6 +283,8 @@ class BacktestAccount:
 
         net_pnl = gross_pnl - exit_fee
         pnl_r = net_pnl / pos.risk_usd if pos.risk_usd > 0 else 0.0
+        early_mae_r = pos.early_mae_usd / pos.risk_usd if pos.risk_usd > 0 else 0.0
+        early_mfe_r = pos.early_mfe_usd / pos.risk_usd if pos.risk_usd > 0 else 0.0
 
         # Update equity
         self._equity += net_pnl
@@ -298,11 +312,21 @@ class BacktestAccount:
             tp_price=pos.tp_price,
             max_adverse_excursion=pos.max_adverse_excursion,
             max_favourable_excursion=pos.max_favourable_excursion,
+            early_window_bars=pos.early_window_bars,
+            early_mae_usd=pos.early_mae_usd,
+            early_mfe_usd=pos.early_mfe_usd,
+            early_mae_r=early_mae_r,
+            early_mfe_r=early_mfe_r,
         )
         self._closed.append(trade)
         return trade
 
-    def update_mfe_mae(self, trade_id: str, current_price: float) -> None:
+    def update_mfe_mae(
+        self,
+        trade_id: str,
+        current_price: float,
+        timestamp_ms: Optional[int] = None,
+    ) -> None:
         """Update max favourable/adverse excursion for an open position."""
         pos = self._open.get(trade_id)
         if pos is None:
@@ -312,6 +336,17 @@ class BacktestAccount:
             pos.max_favourable_excursion = upnl
         if upnl < pos.max_adverse_excursion:
             pos.max_adverse_excursion = upnl
+
+        # Early window MAE/MFE tracking (first N bars after entry)
+        if timestamp_ms is not None:
+            if pos.last_bar_ts != timestamp_ms:
+                pos.last_bar_ts = timestamp_ms
+                pos.early_bars_count += 1
+            if pos.early_bars_count <= pos.early_window_bars:
+                if upnl > pos.early_mfe_usd:
+                    pos.early_mfe_usd = upnl
+                if upnl < pos.early_mae_usd:
+                    pos.early_mae_usd = upnl
 
     def snapshot_equity(self, timestamp_ms: int) -> None:
         """Record current equity on the equity curve."""

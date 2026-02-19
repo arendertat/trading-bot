@@ -17,7 +17,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -76,6 +76,8 @@ class BacktestResult:
     total_signals: int
     total_entries: int
     rejected_risk: int
+    features_at_entry: Dict[str, dict] = field(default_factory=dict)
+    data_quality: Dict[str, dict] = field(default_factory=dict)
 
 
 class BacktestEngine:
@@ -184,10 +186,13 @@ class BacktestEngine:
             "4h":  days * 6   + 50,
         })
         provider = HistoricalDataProvider(self._exchange, fetch_store)
+        timeframes = ["5m", "1h", "4h"]
         for symbol in symbols:
-            for tf in ["5m", "1h", "4h"]:
+            for tf in timeframes:
                 count = provider.fetch(symbol, tf, start, end)
                 logger.info(f"  {symbol} {tf}: {count} candles")
+
+        data_quality = _compute_data_quality(fetch_store, symbols, timeframes, _TF_MS)
 
         # ── Step 2: Build 5m timeline ──────────────────────────────────
         # Collect all unique 5m timestamps (sorted)
@@ -223,6 +228,7 @@ class BacktestEngine:
         total_signals = 0
         total_entries = 0
         rejected_risk = 0
+        features_at_entry: Dict[str, dict] = {}
 
         # Track which 1h/4h candles have been loaded up to the current 5m bar
         tf1h_idx: Dict[str, int] = {s: 0 for s in symbols}
@@ -373,6 +379,25 @@ class BacktestEngine:
                 if pos is not None:
                     pos.trail_enabled = signal.trail_enabled
                     total_entries += 1
+                    features_at_entry[pos.trade_id] = {
+                        "symbol": symbol,
+                        "timestamp": bar_ts,
+                        "strategy": type(strategy).__name__,
+                        "regime": regime_result.regime.value,
+                        "side": signal.side.value if signal.side else None,
+                        "price": current_price,
+                        "signal": {
+                            "reason": signal.reason,
+                            "stop_pct": signal.stop_pct,
+                            "target_r": signal.target_r,
+                            "stop_price": signal.stop_price,
+                            "tp_price": signal.tp_price,
+                            "trail_enabled": signal.trail_enabled,
+                            "trail_after_r": signal.trail_after_r,
+                            "atr_trail_mult": signal.atr_trail_mult,
+                        },
+                        "features": asdict(feature_set),
+                    }
                     logger.debug(
                         f"{symbol}: OPEN {signal.side.value} @ {current_price:.4f} "
                         f"SL={signal.stop_price:.4f} TP={signal.tp_price:.4f} "
@@ -406,6 +431,8 @@ class BacktestEngine:
             total_signals=total_signals,
             total_entries=total_entries,
             rejected_risk=rejected_risk,
+            features_at_entry=features_at_entry,
+            data_quality=data_quality,
         )
 
     # ── Internal helpers ────────────────────────────────────────────────
@@ -432,7 +459,7 @@ class BacktestEngine:
                 continue
 
             # Update MFE/MAE
-            self._account.update_mfe_mae(pos.trade_id, candle.close)
+            self._account.update_mfe_mae(pos.trade_id, candle.close, candle.timestamp)
 
             # Effective stop: use trailing stop if active, else initial stop
             effective_stop = pos.trailing_stop if pos.trailing_stop is not None else pos.stop_price
@@ -527,3 +554,62 @@ def _build_feature_set(raw: dict, current_price: float) -> FeatureSet:
         ema50_4h=raw.get("ema50_4h"),
         book_imbalance_ratio=None,  # Not available in backtest
     )
+
+
+def _compute_data_quality(
+    store: CandleStore,
+    symbols: List[str],
+    timeframes: List[str],
+    tf_ms_map: Dict[str, int],
+) -> Dict[str, dict]:
+    """
+    Compute simple data-quality diagnostics from fetched candles.
+
+    Returns:
+        Dict with bars per symbol/timeframe, gap counts, and missing bar estimates.
+    """
+    bars_total = 0
+    total_gaps = 0
+    total_missing = 0
+    bars_per_symbol: Dict[str, Dict[str, int]] = {}
+    gaps_detected: Dict[str, Dict[str, int]] = {}
+    missing_bars: Dict[str, Dict[str, int]] = {}
+
+    for symbol in symbols:
+        bars_per_symbol[symbol] = {}
+        gaps_detected[symbol] = {}
+        missing_bars[symbol] = {}
+        for tf in timeframes:
+            candles = store.get_candles(symbol, tf)
+            bars = len(candles)
+            bars_total += bars
+            bars_per_symbol[symbol][tf] = bars
+
+            gaps = 0
+            missing = 0
+            step = tf_ms_map.get(tf, 0)
+            if step > 0 and bars > 1:
+                prev_ts = candles[0].timestamp
+                for c in candles[1:]:
+                    diff = c.timestamp - prev_ts
+                    if diff > step:
+                        gap_bars = diff // step - 1
+                        if gap_bars > 0:
+                            gaps += 1
+                            missing += int(gap_bars)
+                    prev_ts = c.timestamp
+
+            gaps_detected[symbol][tf] = gaps
+            missing_bars[symbol][tf] = missing
+            total_gaps += gaps
+            total_missing += missing
+
+    return {
+        "bars_total": bars_total,
+        "bars_per_symbol": bars_per_symbol,
+        "gaps_detected": gaps_detected,
+        "missing_bars": missing_bars,
+        "total_gaps": total_gaps,
+        "total_missing_bars": total_missing,
+        "timeframes": timeframes,
+    }

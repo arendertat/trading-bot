@@ -170,7 +170,9 @@ def main() -> None:
     try:
         from bot.backtest.engine import BacktestEngine
         engine = BacktestEngine(config, exchange, initial_equity=args.equity)
+        run_started_at = datetime.now(timezone.utc)
         result = engine.run(symbols=symbols, start=start, end=end)
+        run_ended_at = datetime.now(timezone.utc)
     except KeyboardInterrupt:
         print("\n[INTERRUPTED] Backtest aborted by user.", file=sys.stderr)
         sys.exit(0)
@@ -188,15 +190,32 @@ def main() -> None:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            _save_report_json(report, result, output_path)
+            _save_report_json(
+                report=report,
+                result=result,
+                path=output_path,
+                config=config,
+                run_started_at=run_started_at,
+                run_ended_at=run_ended_at,
+                config_path=str(config_path),
+            )
             logger.info(f"Report saved to {output_path}")
         except Exception as e:
             logger.warning(f"Failed to save report: {e}")
 
 
-def _save_report_json(report, result, path: Path) -> None:
+def _save_report_json(
+    report,
+    result,
+    path: Path,
+    config,
+    run_started_at: datetime,
+    run_ended_at: datetime,
+    config_path: str,
+) -> None:
     """Serialise report + raw trades to JSON."""
     import dataclasses
+    import subprocess
 
     def _to_serialisable(obj):
         if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
@@ -214,10 +233,60 @@ def _save_report_json(report, result, path: Path) -> None:
             return None
         return obj
 
+    def _get_git_commit() -> str | None:
+        try:
+            out = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+            return out or None
+        except Exception:
+            return None
+
+    run_meta = {
+        "run_id": f"bt-{run_started_at.strftime('%Y%m%d-%H%M%S')}",
+        "started_at": run_started_at.isoformat(),
+        "ended_at": run_ended_at.isoformat(),
+        "symbols": result.symbols,
+        "start": result.start.isoformat(),
+        "end": result.end.isoformat(),
+        "timeframes": config.timeframes.model_dump(),
+        "initial_equity": result.initial_equity,
+        "exchange": {
+            "name": config.exchange.name,
+            "testnet": config.exchange.testnet,
+            "margin_mode": config.exchange.margin_mode,
+            "recv_window_ms": config.exchange.recv_window_ms,
+        },
+        "fee_model": {
+            "maker_fee_pct": config.execution.maker_fee_pct,
+            "taker_fee_pct": config.execution.taker_fee_pct,
+        },
+        "slippage_model": {
+            "paper_slippage_limit_pct": config.execution.paper_slippage_limit_pct,
+            "paper_slippage_market_pct": config.execution.paper_slippage_market_pct,
+            "paper_slippage_stop_pct": config.execution.paper_slippage_stop_pct,
+        },
+        "git_commit": _get_git_commit(),
+        "config_path": config_path,
+    }
+
+    config_snapshot = {
+        "timeframes": config.timeframes.model_dump(),
+        "risk": config.risk.model_dump(),
+        "strategies": config.strategies.model_dump(),
+        "universe": config.universe.model_dump(),
+    }
+
     payload = {
+        "run": run_meta,
+        "config_snapshot": config_snapshot,
+        "diagnostics": result.data_quality,
         "report": _to_serialisable(report),
         "trades": _to_serialisable(result.trades),
         "equity_curve": result.equity_curve,
+        "features_at_entry": result.features_at_entry,
     }
     with open(path, "w") as f:
         json.dump(payload, f, indent=2, default=str)
