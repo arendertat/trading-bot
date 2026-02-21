@@ -49,6 +49,7 @@ config/config.json
 # Logs
 logs/
 *.log
+results/
 
 # OS
 .DS_Store
