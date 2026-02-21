@@ -134,7 +134,8 @@ class Strategy(ABC):
         self,
         entry_price: float,
         side: OrderSide,
-        atr: float
+        atr: float,
+        regime_result,
     ) -> float:
         """
         Calculate stop loss price.
@@ -147,6 +148,15 @@ class Strategy(ABC):
         """
         if self.config.get("dynamic_stop_enabled", False) and atr and atr > 0:
             multiplier = self.config.get("stop_atr_multiplier", 1.5)
+            multipliers = self.config.get("stop_atr_multiplier_by_regime")
+            if multipliers and regime_result is not None:
+                regime_name = regime_result.regime.value
+                if regime_name == "TREND":
+                    multiplier = multipliers.get("trend", multiplier)
+                elif regime_name == "RANGE":
+                    multiplier = multipliers.get("range", multiplier)
+                elif regime_name == "HIGH_VOL":
+                    multiplier = multipliers.get("high_vol", multiplier)
             stop_distance = atr * multiplier
             if side == OrderSide.LONG:
                 return entry_price - stop_distance
@@ -243,7 +253,7 @@ class Strategy(ABC):
             return None
 
         # Calculate stop/TP
-        stop_price = self.calculate_stop_loss(current_price, side, features.atr_5m)
+        stop_price = self.calculate_stop_loss(current_price, side, features.atr_5m, regime_result)
         tp_price = self.calculate_take_profit(current_price, stop_price, side)
 
         # Calculate stop distance percentage

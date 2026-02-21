@@ -61,6 +61,9 @@ class RegimeDetector:
         ema50_1h: float,
         kaufman_er: Optional[float] = None,
         flip_rate: Optional[float] = None,
+        choppiness: Optional[float] = None,
+        adx_momentum: Optional[float] = None,
+        ema20_1h_slope: Optional[float] = None,
         ema1h_spread_pct: Optional[float] = None,
         bb_width_pct_rank: Optional[float] = None,
         rsi_5m: Optional[float] = None,
@@ -81,6 +84,9 @@ class RegimeDetector:
             bb_width: Bollinger Band width on 5m
             kaufman_er: Kaufman Efficiency Ratio on 5m
             flip_rate: Flip rate on 5m
+            choppiness: Choppiness Index on 5m
+            adx_momentum: ADX momentum on 5m
+            ema20_1h_slope: EMA20 slope on 1h
             ema1h_spread_pct: EMA20/EMA50 spread % on 1h
             bb_width_pct_rank: BB width percentile rank (optional)
             rsi_5m: RSI(14) on 5m
@@ -122,6 +128,7 @@ class RegimeDetector:
                 high_vol_score=0.0,
                 chop_score=None,
                 chop_signals=None,
+                gate_reason="SPREAD_GATE",
             )
             self._update_regime_state(symbol, result.regime, result.confidence, None)
             self._log_chop_debug(
@@ -148,9 +155,17 @@ class RegimeDetector:
             adx=adx,
             kaufman_er=kaufman_er,
             flip_rate=flip_rate,
+            choppiness=choppiness,
+            atr_z=atr_z,
             ema1h_spread_pct=ema1h_spread_pct,
             bb_width=bb_width,
             bb_width_pct_rank=bb_width_pct_rank,
+        )
+        trend_score = self._compute_trend_score(
+            adx=adx,
+            adx_momentum=adx_momentum,
+            ema20_1h_slope=ema20_1h_slope,
+            ema1h_spread_pct=ema1h_spread_pct,
         )
 
         # Rule 1: HIGH_VOL if ATR_Z > threshold
@@ -168,11 +183,12 @@ class RegimeDetector:
                 ema50_1h=ema50_1h,
                 reasons=reasons,
                 trend_direction=None,
-                trend_score=0.0,
+                trend_score=trend_score,
                 range_score=0.0,
                 high_vol_score=regime_scores[RegimeType.HIGH_VOL],
                 chop_score=chop_score,
                 chop_signals=chop_signals,
+                gate_reason=None,
             )
             self._update_regime_state(symbol, result.regime, result.confidence, None)
             self._log_chop_debug(
@@ -204,11 +220,12 @@ class RegimeDetector:
                 ema50_1h=ema50_1h,
                 reasons=reasons,
                 trend_direction=None,
-                trend_score=0.0,
+                trend_score=trend_score,
                 range_score=0.0,
                 high_vol_score=0.0,
                 chop_score=chop_score,
                 chop_signals=chop_signals,
+                gate_reason="CHOP_GATE",
             )
             self._update_regime_state(symbol, result.regime, result.confidence, None)
             self._log_chop_debug(
@@ -266,9 +283,11 @@ class RegimeDetector:
             regime = RegimeType.CHOP_NO_TRADE
             confidence = max_confidence
             reasons.append(f"Low confidence: {confidence:.2f} < {self.config.confidence_threshold}")
+            gate_reason = "INSUFFICIENT_CONFIDENCE"
         else:
             regime = max_regime
             confidence = max_confidence
+            gate_reason = None
 
         debounced = False
         if regime in (RegimeType.TREND, RegimeType.RANGE):
@@ -311,11 +330,12 @@ class RegimeDetector:
             ema50_1h=ema50_1h,
             reasons=reasons,
             trend_direction=trend_direction if regime == RegimeType.TREND else None,
-            trend_score=regime_scores[RegimeType.TREND],
+            trend_score=trend_score,
             range_score=regime_scores[RegimeType.RANGE],
             high_vol_score=regime_scores[RegimeType.HIGH_VOL],
             chop_score=chop_score,
             chop_signals=chop_signals,
+            gate_reason=gate_reason,
         )
 
     def _compute_high_vol_confidence(self, atr_z: float) -> float:
@@ -449,29 +469,75 @@ class RegimeDetector:
         adx: float,
         kaufman_er: Optional[float],
         flip_rate: Optional[float],
+        choppiness: Optional[float],
+        atr_z: Optional[float],
         ema1h_spread_pct: Optional[float],
         bb_width: Optional[float],
         bb_width_pct_rank: Optional[float],
     ) -> tuple[int, list[bool]]:
         chop_cfg = self.config.chop
-        s1 = adx < self._adaptive_range_adx_max
+        s1 = choppiness is not None and choppiness >= chop_cfg.choppiness_min
         s2 = kaufman_er is not None and kaufman_er <= chop_cfg.er_max
         s3 = flip_rate is not None and flip_rate >= chop_cfg.flip_rate_min
         s4 = ema1h_spread_pct is not None and ema1h_spread_pct <= chop_cfg.ema1h_spread_max
 
-        s5 = False
+        bb_squeeze = False
         if (
             bb_width_pct_rank is not None
             and chop_cfg.bb_width_percentile_lookback is not None
             and chop_cfg.bb_width_percentile_max is not None
         ):
-            s5 = bb_width_pct_rank <= chop_cfg.bb_width_percentile_max
+            bb_squeeze = bb_width_pct_rank <= chop_cfg.bb_width_percentile_max
         elif bb_width is not None and chop_cfg.bb_width_chop_max is not None:
-            s5 = bb_width <= chop_cfg.bb_width_chop_max
+            bb_squeeze = bb_width <= chop_cfg.bb_width_chop_max
+
+        if bb_width is not None:
+            bb_squeeze = bb_squeeze or (bb_width <= chop_cfg.bb_squeeze_max)
+
+        atr_compression = atr_z is not None and atr_z <= chop_cfg.atr_compression_max
+        s5 = bb_squeeze and atr_compression
 
         chop_signals = [s1, s2, s3, s4, s5]
         chop_score = sum(1 for s in chop_signals if s)
         return chop_score, chop_signals
+
+    def _compute_trend_score(
+        self,
+        adx: float,
+        adx_momentum: Optional[float],
+        ema20_1h_slope: Optional[float],
+        ema1h_spread_pct: Optional[float],
+    ) -> float:
+        cfg = self.config.trend_score
+        available = sum(
+            v is not None for v in [adx_momentum, ema20_1h_slope, ema1h_spread_pct]
+        )
+        if available < 2:
+            return 1.0
+        w_sum = cfg.weight_adx + cfg.weight_adx_momentum + cfg.weight_ema_slope + cfg.weight_ema_spread
+        if w_sum <= 0:
+            return 0.0
+
+        adx_score = self._normalize(adx, cfg.adx_min, cfg.adx_max)
+        adx_mom_score = self._normalize(adx_momentum, cfg.adx_momentum_min, cfg.adx_momentum_max)
+        ema_slope_score = self._normalize(ema20_1h_slope, cfg.ema_slope_min, cfg.ema_slope_max)
+        ema_spread_score = self._normalize(ema1h_spread_pct, cfg.ema_spread_min, cfg.ema_spread_max)
+
+        score = (
+            adx_score * cfg.weight_adx
+            + adx_mom_score * cfg.weight_adx_momentum
+            + ema_slope_score * cfg.weight_ema_slope
+            + ema_spread_score * cfg.weight_ema_spread
+        ) / w_sum
+        return max(0.0, min(1.0, score))
+
+    @staticmethod
+    def _normalize(value: Optional[float], vmin: float, vmax: float) -> float:
+        if value is None:
+            return 0.0
+        if vmax == vmin:
+            return 0.0
+        return max(0.0, min(1.0, (value - vmin) / (vmax - vmin)))
 
     def _range_extremes_ok(
         self,
@@ -631,3 +697,38 @@ class RegimeDetector:
             return True
 
         return self.config.bb_width_range_min <= bb_width <= self.config.bb_width_range_max
+        if trend_score < self.config.trend_score.trend_min_threshold:
+            reasons.append(
+                f"Trend score low: {trend_score:.2f} < {self.config.trend_score.trend_min_threshold}"
+            )
+            result = RegimeResult(
+                symbol=symbol,
+                regime=RegimeType.CHOP_NO_TRADE,
+                confidence=1.0,
+                adx=adx,
+                atr_z=atr_z,
+                bb_width=bb_width,
+                ema20_1h=ema20_1h,
+                ema50_1h=ema50_1h,
+                reasons=reasons,
+                trend_direction=None,
+                trend_score=trend_score,
+                range_score=0.0,
+                high_vol_score=0.0,
+                chop_score=chop_score,
+                chop_signals=chop_signals,
+                gate_reason="TREND_SCORE",
+            )
+            self._update_regime_state(symbol, result.regime, result.confidence, None)
+            self._log_chop_debug(
+                symbol,
+                adx,
+                kaufman_er,
+                flip_rate,
+                ema1h_spread_pct,
+                bb_width,
+                bb_width_pct_rank,
+                chop_score=chop_score,
+                chop_signals=chop_signals,
+            )
+            return result

@@ -328,3 +328,26 @@ class TestChopFeatures:
         fr = features.flip_rate(close, lookback=20)
         assert fr is not None
         assert fr >= 0.8
+
+    def test_choppiness_index_range(self):
+        """Choppiness index should be within 0-100"""
+        high = pd.Series([10 + i for i in range(30)])
+        low = pd.Series([9 + i for i in range(30)])
+        close = pd.Series([9.5 + i for i in range(30)])
+        chop = features.choppiness_index(high, low, close, lookback=20)
+        assert chop is not None
+        assert 0.0 <= chop <= 100.0
+
+    def test_adx_momentum_basic(self):
+        """ADX momentum should be positive for rising series"""
+        adx_series = pd.Series([10 + i for i in range(30)])
+        mom = features.adx_momentum(adx_series, lookback=10)
+        assert mom is not None
+        assert mom > 0
+
+    def test_ema_slope_basic(self):
+        """EMA slope should be positive for rising series"""
+        ema_series = pd.Series([100 + i for i in range(30)])
+        slope = features.ema_slope(ema_series, lookback=10)
+        assert slope is not None
+        assert slope > 0

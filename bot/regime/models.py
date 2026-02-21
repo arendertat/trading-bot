@@ -24,6 +24,7 @@ class RegimeResult:
     high_vol_score: Optional[float] = None
     chop_score: Optional[int] = None
     chop_signals: Optional[list[bool]] = None
+    gate_reason: Optional[str] = None
 
     def __post_init__(self):
         """Ensure confidence is clamped to [0, 1]"""

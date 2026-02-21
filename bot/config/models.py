@@ -90,10 +90,14 @@ class RegimeChopConfig(BaseModel):
     er_max: float = Field(default=0.25, ge=0.0, le=1.0)
     flip_lookback: int = Field(default=20, ge=5, le=200)
     flip_rate_min: float = Field(default=0.55, ge=0.0, le=1.0)
+    choppiness_lookback: int = Field(default=20, ge=5, le=200)
+    choppiness_min: float = Field(default=55.0, ge=0.0, le=100.0)
     ema1h_spread_max: float = Field(default=0.001, ge=0.0, le=0.05)
     bb_width_percentile_lookback: int = Field(default=100, ge=20, le=500)
     bb_width_percentile_max: float = Field(default=0.20, ge=0.0, le=1.0)
     bb_width_chop_max: Optional[float] = Field(default=None, ge=0.0, le=0.5)
+    bb_squeeze_max: float = Field(default=0.012, ge=0.0, le=0.2)
+    atr_compression_max: float = Field(default=0.8, ge=-5.0, le=5.0)
     score_threshold: int = Field(default=3, ge=1, le=5)
     range_requires_extremes: bool = True
     regime_persistence_bars: int = Field(default=2, ge=1, le=10)
@@ -113,6 +117,25 @@ class RegimeChopConfig(BaseModel):
         return self
 
 
+class RegimeTrendScoreConfig(BaseModel):
+    """Trend score configuration"""
+    adx_min: float = Field(default=18.0, ge=5.0, le=50.0)
+    adx_max: float = Field(default=40.0, ge=10.0, le=80.0)
+    adx_momentum_lookback: int = Field(default=10, ge=2, le=100)
+    adx_momentum_min: float = Field(default=-0.2, ge=-2.0, le=2.0)
+    adx_momentum_max: float = Field(default=0.5, ge=-2.0, le=2.0)
+    ema_slope_lookback_1h: int = Field(default=8, ge=2, le=50)
+    ema_slope_min: float = Field(default=-0.001, ge=-0.05, le=0.05)
+    ema_slope_max: float = Field(default=0.004, ge=-0.05, le=0.05)
+    ema_spread_min: float = Field(default=0.0005, ge=0.0, le=0.05)
+    ema_spread_max: float = Field(default=0.004, ge=0.0, le=0.1)
+    weight_adx: float = Field(default=0.25, ge=0.0, le=1.0)
+    weight_adx_momentum: float = Field(default=0.25, ge=0.0, le=1.0)
+    weight_ema_slope: float = Field(default=0.25, ge=0.0, le=1.0)
+    weight_ema_spread: float = Field(default=0.25, ge=0.0, le=1.0)
+    trend_min_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+
+
 class RegimeConfig(BaseModel):
     """Regime detection configuration"""
     trend_adx_min: float = Field(default=25, ge=15, le=50)
@@ -127,6 +150,66 @@ class RegimeConfig(BaseModel):
     adaptive_adx_window: int = Field(default=8640, ge=100, le=50000)  # 30d × 288 bar/gün
     # CHOP detection parameters
     chop: RegimeChopConfig = Field(default_factory=RegimeChopConfig)
+    trend_score: RegimeTrendScoreConfig = Field(default_factory=RegimeTrendScoreConfig)
+
+
+class StopAtrMultiplierByRegime(BaseModel):
+    """ATR stop multiplier per regime"""
+    trend: float = Field(default=1.5, ge=0.5, le=5.0)
+    range: float = Field(default=1.8, ge=0.5, le=6.0)
+    high_vol: float = Field(default=2.2, ge=0.5, le=8.0)
+
+
+class SetupQualityWeights(BaseModel):
+    """Weights for setup quality score"""
+    rsi: float = Field(default=0.2, ge=0.0, le=1.0)
+    ema_alignment: float = Field(default=0.2, ge=0.0, le=1.0)
+    adx: float = Field(default=0.2, ge=0.0, le=1.0)
+    trend_alignment: float = Field(default=0.2, ge=0.0, le=1.0)
+    bb_width: float = Field(default=0.2, ge=0.0, le=1.0)
+
+
+class CostGateConfig(BaseModel):
+    """Cost-aware trade gate configuration"""
+    base_edge_r: float = Field(default=1.0, ge=0.1, le=10.0)
+    min_edge_over_cost_mult: float = Field(default=2.0, ge=0.1, le=10.0)
+    estimated_entry_fee_pct: float = Field(default=0.0002, ge=0.0, le=0.01)
+    estimated_exit_fee_pct: float = Field(default=0.0004, ge=0.0, le=0.02)
+    estimated_slippage_pct: float = Field(default=0.0002, ge=0.0, le=0.02)
+    estimated_funding_pct: float = Field(default=0.0, ge=0.0, le=0.01)
+    rsi_ideal_min: float = Field(default=40.0, ge=0.0, le=100.0)
+    rsi_ideal_max: float = Field(default=60.0, ge=0.0, le=100.0)
+    ema_alignment_max_pct: float = Field(default=0.003, ge=0.0, le=0.05)
+    adx_min: float = Field(default=15.0, ge=0.0, le=60.0)
+    adx_max: float = Field(default=35.0, ge=0.0, le=80.0)
+    bb_width_min: float = Field(default=0.01, ge=0.0, le=0.2)
+    bb_width_max: float = Field(default=0.05, ge=0.0, le=0.5)
+    setup_quality_weights: SetupQualityWeights = Field(default_factory=SetupQualityWeights)
+
+
+class TimeFilterConfig(BaseModel):
+    """Time-based filters and diagnostics"""
+    bad_hours: List[int] = Field(default_factory=list)
+    bad_weekdays: List[str] = Field(default_factory=list)
+    min_samples: int = Field(default=20, ge=1, le=500)
+    avg_r_threshold: float = Field(default=-0.2, ge=-5.0, le=5.0)
+
+    @field_validator("bad_hours")
+    @classmethod
+    def validate_bad_hours(cls, v: List[int]) -> List[int]:
+        for h in v:
+            if h < 0 or h > 23:
+                raise ValueError("bad_hours must be between 0 and 23")
+        return v
+
+    @field_validator("bad_weekdays")
+    @classmethod
+    def validate_bad_weekdays(cls, v: List[str]) -> List[str]:
+        valid = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+        for d in v:
+            if d not in valid:
+                raise ValueError("bad_weekdays must be one of Mon..Sun")
+        return v
 
 
 class StrategyTrendPullbackConfig(BaseModel):
@@ -144,6 +227,9 @@ class StrategyTrendPullbackConfig(BaseModel):
     # ATR-based dynamic stop (Özellik 5)
     dynamic_stop_enabled: bool = False
     stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
+    stop_atr_multiplier_by_regime: StopAtrMultiplierByRegime = Field(
+        default_factory=StopAtrMultiplierByRegime
+    )
     # Order book imbalance confirmation (Özellik 12)
     # When True, requires bid/ask imbalance aligned with trade direction
     use_book_imbalance: bool = False
@@ -160,6 +246,9 @@ class StrategyTrendBreakoutConfig(BaseModel):
     # ATR-based dynamic stop (Özellik 5)
     dynamic_stop_enabled: bool = False
     stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
+    stop_atr_multiplier_by_regime: StopAtrMultiplierByRegime = Field(
+        default_factory=StopAtrMultiplierByRegime
+    )
     # Order book imbalance confirmation (Özellik 12)
     # When True, requires bid/ask imbalance aligned with trade direction
     use_book_imbalance: bool = False
@@ -176,6 +265,9 @@ class StrategyRangeMeanReversionConfig(BaseModel):
     # ATR-based dynamic stop (Özellik 5)
     dynamic_stop_enabled: bool = False
     stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
+    stop_atr_multiplier_by_regime: StopAtrMultiplierByRegime = Field(
+        default_factory=StopAtrMultiplierByRegime
+    )
 
 
 class StrategiesConfig(BaseModel):
@@ -267,6 +359,8 @@ class BotConfig(BaseModel):
     risk: RiskConfig
     regime: RegimeConfig
     strategies: StrategiesConfig
+    cost_gate: CostGateConfig = Field(default_factory=CostGateConfig)
+    time_filters: TimeFilterConfig = Field(default_factory=TimeFilterConfig)
     leverage: LeverageConfig
     execution: ExecutionConfig
     performance: PerformanceConfig
@@ -320,6 +414,13 @@ class BotConfig(BaseModel):
                 raise ValueError(
                     "bb_width_range_min must be < bb_width_range_max"
                 )
+
+        # Validate cost gate ranges
+        cg = self.cost_gate
+        if cg.rsi_ideal_min >= cg.rsi_ideal_max:
+            raise ValueError("cost_gate.rsi_ideal_min must be < rsi_ideal_max")
+        if cg.bb_width_min >= cg.bb_width_max:
+            raise ValueError("cost_gate.bb_width_min must be < bb_width_max")
 
         # Validate RSI ranges for trend pullback
         tp = self.strategies.trend_pullback

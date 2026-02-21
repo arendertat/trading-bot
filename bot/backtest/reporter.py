@@ -137,6 +137,7 @@ class BacktestReport:
 
     # Time analysis
     time_stats: TimeStats
+    time_filter_suggestions: Dict[str, List]
 
     # Strategy × Regime matrix  regime → strategy → {trades, win_rate, avg_r, pnl_usd}
     strategy_regime_matrix: Dict[str, Dict[str, Dict[str, float]]]
@@ -155,7 +156,9 @@ class BacktestReport:
 
     # Per-regime breakdown
     by_regime: Dict[str, Dict[str, float]]
-    regime_distribution: Dict[str, Dict[str, float]]
+    regime_distribution: Dict[str, Dict[str, dict]]
+    reject_reason_distribution: Dict[str, int]
+    cost_breakdown: Dict[str, float]
     monthly_summary: List[Dict[str, float]]
     drawdown_episodes: List[Dict[str, float]]
 
@@ -399,6 +402,11 @@ def build_report(result: BacktestResult) -> BacktestReport:
 
     # ── Time analysis ─────────────────────────────────────────────────
     time_stats = _compute_time_stats(trades)
+    time_filter_suggestions = _compute_time_filter_suggestions(
+        time_stats,
+        result.time_filter_min_samples,
+        result.time_filter_avg_r_threshold,
+    )
 
     # ── Strategy × Regime matrix ──────────────────────────────────────
     strategy_regime_matrix = _compute_strategy_regime_matrix(trades)
@@ -465,6 +473,12 @@ def build_report(result: BacktestResult) -> BacktestReport:
         result.regime_bar_counts, trades
     )
     drawdown_episodes = _compute_drawdown_episodes(equity_curve, trades)
+    reject_reason_distribution = _compute_reject_reason_distribution(
+        result.reject_reason_counts
+    )
+    cost_breakdown = _compute_cost_breakdown(
+        total_gross, total_fees, total_slippage, total_funding, total_net, total_trades
+    )
 
     return BacktestReport(
         initial_equity=initial,
@@ -500,6 +514,7 @@ def build_report(result: BacktestResult) -> BacktestReport:
         exit_stats=exit_stats,
         mae_mfe=mae_mfe,
         time_stats=time_stats,
+        time_filter_suggestions=time_filter_suggestions,
         strategy_regime_matrix=strategy_regime_matrix,
         max_consecutive_losses=max_consec_losses,
         max_consecutive_wins=max_consec_wins,
@@ -513,6 +528,8 @@ def build_report(result: BacktestResult) -> BacktestReport:
         by_strategy=by_strategy,
         by_regime=by_regime,
         regime_distribution=regime_distribution,
+        reject_reason_distribution=reject_reason_distribution,
+        cost_breakdown=cost_breakdown,
         monthly_summary=monthly_summary,
         drawdown_episodes=drawdown_episodes,
         symbols=result.symbols,
@@ -629,20 +646,37 @@ def _compute_monthly_summary(
 def _compute_regime_distribution(
     regime_bar_counts: Dict[str, int],
     trades: List[BacktestTrade],
-) -> Dict[str, Dict[str, float]]:
+) -> Dict[str, Dict[str, dict]]:
     """Compute regime distribution for bars and trades."""
-    regime_trade_counts: Dict[str, int] = defaultdict(int)
+    bars = {k: int(v) for k, v in regime_bar_counts.items()}
+    trade_groups: Dict[str, List[BacktestTrade]] = defaultdict(list)
     for t in trades:
-        regime_trade_counts[t.regime] += 1
+        trade_groups[t.regime].append(t)
 
-    distribution: Dict[str, Dict[str, float]] = {}
-    all_regimes = set(regime_bar_counts.keys()) | set(regime_trade_counts.keys())
+    trades_summary: Dict[str, dict] = {}
+    all_regimes = set(bars.keys()) | set(trade_groups.keys()) | {"CHOP_NO_TRADE"}
     for regime in sorted(all_regimes):
-        distribution[regime] = {
-            "bars": float(regime_bar_counts.get(regime, 0)),
-            "trades": float(regime_trade_counts.get(regime, 0)),
+        group = trade_groups.get(regime, [])
+        if regime == "CHOP_NO_TRADE":
+            trades_summary[regime] = {"count": len(group)}
+            continue
+        wins = [t for t in group if t.pnl_usd > 0]
+        gross_wins = sum(t.pnl_usd for t in wins)
+        gross_losses = abs(sum(t.pnl_usd for t in group if t.pnl_usd <= 0))
+        profit_factor = (gross_wins / gross_losses) if gross_losses > 0 else 0.0
+        avg_r = sum(t.pnl_r for t in group) / len(group) if group else 0.0
+        trades_summary[regime] = {
+            "count": len(group),
+            "win_rate": (len(wins) / len(group)) if group else 0.0,
+            "profit_factor": profit_factor,
+            "avg_r": avg_r,
+            "net_pnl_usd": sum(t.pnl_usd for t in group),
         }
-    return distribution
+
+    return {
+        "bars": bars,
+        "trades": trades_summary,
+    }
 
 
 def _compute_drawdown_episodes(
@@ -702,6 +736,41 @@ def _build_dd_episode(
         "depth_usd": dd_usd,
         "duration_days": duration_days,
         "trades": trade_count,
+    }
+
+
+def _compute_reject_reason_distribution(
+    counts: Dict[str, int],
+) -> Dict[str, int]:
+    keys = [
+        "COST_GATE",
+        "CHOP_GATE",
+        "SPREAD_GATE",
+        "RISK_BLOCK",
+        "COOLDOWN",
+        "INSUFFICIENT_CONFIDENCE",
+    ]
+    return {k: int(counts.get(k, 0)) for k in keys}
+
+
+def _compute_cost_breakdown(
+    total_gross: float,
+    total_fees: float,
+    total_slippage: float,
+    total_funding: float,
+    total_net: float,
+    total_trades: int,
+) -> Dict[str, float]:
+    net_over_gross = (total_net / total_gross) if total_gross != 0 else 0.0
+    return {
+        "total_gross_pnl_usd": total_gross,
+        "total_fees_usd": total_fees,
+        "total_slippage_usd": total_slippage,
+        "total_funding_usd": total_funding,
+        "total_net_pnl_usd": total_net,
+        "avg_fee_per_trade_usd": (total_fees / total_trades) if total_trades > 0 else 0.0,
+        "avg_slippage_per_trade_usd": (total_slippage / total_trades) if total_trades > 0 else 0.0,
+        "net_over_gross_ratio": net_over_gross,
     }
 
 
@@ -781,6 +850,27 @@ def _compute_time_stats(trades: List[BacktestTrade]) -> TimeStats:
         by_weekday_trades=by_weekday_trades,
         by_hour_trades=by_hour_trades,
     )
+
+
+def _compute_time_filter_suggestions(
+    time_stats: TimeStats,
+    min_samples: int,
+    avg_r_threshold: float,
+) -> Dict[str, List]:
+    bad_hours = [
+        hour for hour, avg_r in time_stats.by_hour.items()
+        if time_stats.by_hour_trades.get(hour, 0) >= min_samples and avg_r < avg_r_threshold
+    ]
+    bad_weekdays = [
+        day for day, avg_r in time_stats.by_weekday.items()
+        if time_stats.by_weekday_trades.get(day, 0) >= min_samples and avg_r < avg_r_threshold
+    ]
+    return {
+        "bad_hours": sorted(bad_hours),
+        "bad_weekdays": bad_weekdays,
+        "min_samples": min_samples,
+        "avg_r_threshold": avg_r_threshold,
+    }
 
 
 def _compute_strategy_regime_matrix(

@@ -212,6 +212,66 @@ def zscore(values: pd.Series, window: int = 100) -> Optional[pd.Series]:
     return z
 
 
+def choppiness_index(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    lookback: int = 14
+) -> Optional[float]:
+    """
+    Calculate Choppiness Index (latest value).
+
+    Args:
+        high: High series
+        low: Low series
+        close: Close series
+        lookback: Lookback window
+
+    Returns:
+        Latest choppiness value or None if insufficient data
+    """
+    if len(close) < lookback + 1:
+        return None
+
+    # True Range series
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    tr_sum = tr.iloc[-lookback:].sum()
+    high_max = high.iloc[-lookback:].max()
+    low_min = low.iloc[-lookback:].min()
+    denom = max(high_max - low_min, 1e-12)
+    import math
+    chop = 100 * math.log10(tr_sum / denom) / math.log10(lookback)
+    return float(max(0.0, min(100.0, chop)))
+
+
+def adx_momentum(adx_series: pd.Series, lookback: int = 10) -> Optional[float]:
+    """
+    Compute ADX momentum as relative change over lookback.
+    """
+    if adx_series is None or len(adx_series) < lookback + 1:
+        return None
+    prev = adx_series.iloc[-1 - lookback]
+    curr = adx_series.iloc[-1]
+    denom = max(abs(prev), 1e-12)
+    return float((curr - prev) / denom)
+
+
+def ema_slope(series: pd.Series, lookback: int) -> Optional[float]:
+    """
+    Compute normalized EMA slope over lookback (latest value).
+    """
+    if series is None or len(series) < lookback + 1:
+        return None
+    prev = series.iloc[-1 - lookback]
+    curr = series.iloc[-1]
+    denom = max(abs(curr), 1e-12)
+    return float((curr - prev) / denom)
+
+
 def kaufman_er(close: pd.Series, lookback: int) -> Optional[float]:
     """
     Calculate Kaufman Efficiency Ratio (ER) for the latest bar.

@@ -43,6 +43,10 @@ class BacktestTrade:
     stop_price: float
     tp_price: Optional[float]
     regime_confidence: Optional[float] = None
+    estimated_cost_usd: Optional[float] = None
+    estimated_cost_r: Optional[float] = None
+    expected_edge_r: Optional[float] = None
+    setup_quality_score: Optional[float] = None
     max_adverse_excursion: float = 0.0   # Worst unrealised loss during trade
     max_favourable_excursion: float = 0.0  # Best unrealised profit during trade
     # Early window stats (first N bars after entry)
@@ -78,6 +82,10 @@ class OpenBacktestPosition:
     entry_price_raw: float = 0.0
     entry_slippage_usd: float = 0.0
     regime_confidence: Optional[float] = None
+    estimated_cost_usd: Optional[float] = None
+    estimated_cost_r: Optional[float] = None
+    expected_edge_r: Optional[float] = None
+    setup_quality_score: Optional[float] = None
     max_adverse_excursion: float = 0.0
     max_favourable_excursion: float = 0.0
     # Early window tracking (first N bars after entry)
@@ -210,6 +218,10 @@ class BacktestAccount:
         strategy: str,
         regime: str,
         regime_confidence: Optional[float] = None,
+        estimated_cost_usd: Optional[float] = None,
+        estimated_cost_r: Optional[float] = None,
+        expected_edge_r: Optional[float] = None,
+        setup_quality_score: Optional[float] = None,
         trail_after_r: float = 1.0,
         atr_trail_mult: float = 2.0,
     ) -> Optional[OpenBacktestPosition]:
@@ -253,6 +265,10 @@ class BacktestAccount:
             entry_price_raw=entry_price_raw,
             entry_slippage_usd=entry_slippage_usd,
             regime_confidence=regime_confidence,
+            estimated_cost_usd=estimated_cost_usd,
+            estimated_cost_r=estimated_cost_r,
+            expected_edge_r=expected_edge_r,
+            setup_quality_score=setup_quality_score,
         )
         self._open[trade_id] = pos
         self._equity -= entry_fee
@@ -333,6 +349,10 @@ class BacktestAccount:
             strategy=pos.strategy,
             regime=pos.regime,
             regime_confidence=pos.regime_confidence,
+            estimated_cost_usd=pos.estimated_cost_usd,
+            estimated_cost_r=pos.estimated_cost_r,
+            expected_edge_r=pos.expected_edge_r,
+            setup_quality_score=pos.setup_quality_score,
             stop_price=pos.stop_price,
             tp_price=pos.tp_price,
             max_adverse_excursion=pos.max_adverse_excursion,

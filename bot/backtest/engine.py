@@ -39,6 +39,7 @@ from bot.strategies.range_mean_reversion import RangeMeanReversionStrategy
 from bot.strategies.trend_breakout import TrendBreakoutStrategy
 from bot.strategies.trend_pullback import TrendPullbackStrategy
 from bot.utils.jsonl_logger import JsonlLogger
+from bot.utils.edge import compute_setup_quality, estimate_cost_gate
 
 logger = logging.getLogger("trading_bot.backtest.engine")
 
@@ -78,9 +79,12 @@ class BacktestResult:
     total_entries: int
     rejected_risk: int
     rejected_spread: int
+    reject_reason_counts: Dict[str, int] = field(default_factory=dict)
     features_at_entry: Dict[str, dict] = field(default_factory=dict)
     data_quality: Dict[str, dict] = field(default_factory=dict)
     regime_bar_counts: Dict[str, int] = field(default_factory=dict)
+    time_filter_min_samples: int = 0
+    time_filter_avg_r_threshold: float = 0.0
 
 
 class BacktestEngine:
@@ -243,6 +247,14 @@ class BacktestEngine:
         total_entries = 0
         rejected_risk = 0
         rejected_spread = 0
+        reject_reason_counts = {
+            "COST_GATE": 0,
+            "CHOP_GATE": 0,
+            "SPREAD_GATE": 0,
+            "RISK_BLOCK": 0,
+            "COOLDOWN": 0,
+            "INSUFFICIENT_CONFIDENCE": 0,
+        }
         features_at_entry: Dict[str, dict] = {}
         regime_bar_counts: Dict[str, int] = {}
 
@@ -315,6 +327,9 @@ class BacktestEngine:
                 ema50_1h=raw_features.get("ema50_1h", current_price),
                 kaufman_er=raw_features.get("kaufman_er"),
                 flip_rate=raw_features.get("flip_rate"),
+                choppiness=raw_features.get("choppiness"),
+                adx_momentum=raw_features.get("adx_momentum"),
+                ema20_1h_slope=raw_features.get("ema20_1h_slope"),
                 ema1h_spread_pct=raw_features.get("ema1h_spread_pct"),
                 bb_width_pct_rank=raw_features.get("bb_width_pct_rank"),
                 rsi_5m=raw_features.get("rsi14"),
@@ -364,6 +379,17 @@ class BacktestEngine:
             )
 
             if regime_result.regime == RegimeType.CHOP_NO_TRADE:
+                if regime_result.gate_reason in ("CHOP_GATE", "TREND_SCORE"):
+                    reject_reason_counts["CHOP_GATE"] += 1
+                elif any("Low confidence" in r for r in regime_result.reasons):
+                    reject_reason_counts["INSUFFICIENT_CONFIDENCE"] += 1
+                continue
+
+            # ── Time filters (entry only) ───────────────────────────
+            bad_hours = set(self._config.time_filters.bad_hours)
+            bad_weekdays = set(self._config.time_filters.bad_weekdays)
+            if now.hour in bad_hours or now.strftime("%a") in bad_weekdays:
+                reject_reason_counts["COOLDOWN"] += 1
                 continue
 
             # ── Signal generation ────────────────────────────────────
@@ -377,6 +403,7 @@ class BacktestEngine:
             # ── Entry-time spread gate ──────────────────────────────
             if not spread_ok:
                 rejected_spread += 1
+                reject_reason_counts["SPREAD_GATE"] += 1
                 self._strategy_log.log(
                     {
                         "ts": bar_ts,
@@ -444,6 +471,7 @@ class BacktestEngine:
 
                 if not risk_result.approved:
                     rejected_risk += 1
+                    reject_reason_counts["RISK_BLOCK"] += 1
                     logger.debug(
                         f"{symbol}: entry rejected — {risk_result.rejection_reason}"
                     )
@@ -456,9 +484,26 @@ class BacktestEngine:
                 ps = risk_result.position_size
                 if ps is None or not ps.approved:
                     rejected_risk += 1
+                    reject_reason_counts["RISK_BLOCK"] += 1
                     strategy_evaluations.append({
                         "name": type(strategy).__name__,
                         "reason": "position_sizing_reject",
+                    })
+                    continue
+
+                # ── Cost-aware gate ────────────────────────────────
+                setup_quality = compute_setup_quality(feature_set, signal.side, self._config.cost_gate)
+                cost_gate = estimate_cost_gate(
+                    risk_usd=ps.risk_usd,
+                    notional_usd=ps.notional_usd,
+                    config=self._config.cost_gate,
+                    setup_quality_score=setup_quality,
+                )
+                if cost_gate.expected_edge_r < (self._config.cost_gate.min_edge_over_cost_mult * cost_gate.estimated_cost_r):
+                    reject_reason_counts["COST_GATE"] += 1
+                    strategy_evaluations.append({
+                        "name": type(strategy).__name__,
+                        "reason": "cost_gate",
                     })
                     continue
 
@@ -479,6 +524,10 @@ class BacktestEngine:
                     trail_after_r=signal.trail_after_r,
                     atr_trail_mult=signal.atr_trail_mult,
                     regime_confidence=regime_result.confidence,
+                    estimated_cost_usd=cost_gate.estimated_cost_usd,
+                    estimated_cost_r=cost_gate.estimated_cost_r,
+                    expected_edge_r=cost_gate.expected_edge_r,
+                    setup_quality_score=cost_gate.setup_quality_score,
                 )
 
                 if pos is not None:
@@ -504,6 +553,12 @@ class BacktestEngine:
                         "regime_confidence": regime_result.confidence,
                         "side": signal.side.value if signal.side else None,
                         "price": current_price,
+                        "cost_gate": {
+                            "estimated_cost_usd": cost_gate.estimated_cost_usd,
+                            "estimated_cost_r": cost_gate.estimated_cost_r,
+                            "expected_edge_r": cost_gate.expected_edge_r,
+                            "setup_quality_score": cost_gate.setup_quality_score,
+                        },
                         "signal": {
                             "reason": signal.reason,
                             "stop_pct": signal.stop_pct,
@@ -564,9 +619,12 @@ class BacktestEngine:
             total_entries=total_entries,
             rejected_risk=rejected_risk,
             rejected_spread=rejected_spread,
+            reject_reason_counts=reject_reason_counts,
             features_at_entry=features_at_entry,
             data_quality=data_quality,
             regime_bar_counts=regime_bar_counts,
+            time_filter_min_samples=self._config.time_filters.min_samples,
+            time_filter_avg_r_threshold=self._config.time_filters.avg_r_threshold,
         )
 
     # ── Internal helpers ────────────────────────────────────────────────

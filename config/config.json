@@ -54,14 +54,35 @@
       "er_max": 0.25,
       "flip_lookback": 20,
       "flip_rate_min": 0.55,
+      "choppiness_lookback": 20,
+      "choppiness_min": 55.0,
       "ema1h_spread_max": 0.001,
       "bb_width_percentile_lookback": 100,
       "bb_width_percentile_max": 0.2,
       "bb_width_chop_max": 0.02,
+      "bb_squeeze_max": 0.012,
+      "atr_compression_max": 0.8,
       "score_threshold": 3,
       "range_requires_extremes": true,
       "regime_persistence_bars": 2,
       "regime_switch_cooldown_bars": 3
+    },
+    "trend_score": {
+      "adx_min": 18.0,
+      "adx_max": 40.0,
+      "adx_momentum_lookback": 10,
+      "adx_momentum_min": -0.2,
+      "adx_momentum_max": 0.5,
+      "ema_slope_lookback_1h": 8,
+      "ema_slope_min": -0.001,
+      "ema_slope_max": 0.004,
+      "ema_spread_min": 0.0005,
+      "ema_spread_max": 0.004,
+      "weight_adx": 0.25,
+      "weight_adx_momentum": 0.25,
+      "weight_ema_slope": 0.25,
+      "weight_ema_spread": 0.25,
+      "trend_min_threshold": 0.55
     },
     "adaptive_regime": false,
     "adaptive_adx_window": 8640
@@ -77,22 +98,73 @@
       "pullback_rsi_short_max": 58,
       "ema20_band_pct": 0.001,
       "trail_after_r": 1.0,
-      "atr_trail_mult": 2.0
+      "atr_trail_mult": 2.0,
+      "dynamic_stop_enabled": false,
+      "stop_atr_multiplier": 1.5,
+      "stop_atr_multiplier_by_regime": {
+        "trend": 1.5,
+        "range": 1.8,
+        "high_vol": 2.2
+      }
     },
     "trend_breakout": {
       "enabled": true,
       "stop_pct": 0.01,
       "breakout_lookback_bars": 20,
       "breakout_volume_z_min": 1.0,
-      "atr_trail_mult": 2.5
+      "atr_trail_mult": 2.5,
+      "dynamic_stop_enabled": false,
+      "stop_atr_multiplier": 1.5,
+      "stop_atr_multiplier_by_regime": {
+        "trend": 1.5,
+        "range": 1.8,
+        "high_vol": 2.2
+      }
     },
     "range_mean_reversion": {
       "enabled": true,
       "stop_pct": 0.008,
       "target_r_multiple": 1.2,
       "rsi_long_extreme": 25,
-      "rsi_short_extreme": 75
+      "rsi_short_extreme": 75,
+      "dynamic_stop_enabled": false,
+      "stop_atr_multiplier": 1.5,
+      "stop_atr_multiplier_by_regime": {
+        "trend": 1.5,
+        "range": 1.8,
+        "high_vol": 2.2
+      }
     }
+  },
+
+  "cost_gate": {
+    "base_edge_r": 1.0,
+    "min_edge_over_cost_mult": 2.0,
+    "estimated_entry_fee_pct": 0.0002,
+    "estimated_exit_fee_pct": 0.0004,
+    "estimated_slippage_pct": 0.0002,
+    "estimated_funding_pct": 0.0,
+    "rsi_ideal_min": 40.0,
+    "rsi_ideal_max": 60.0,
+    "ema_alignment_max_pct": 0.003,
+    "adx_min": 15.0,
+    "adx_max": 35.0,
+    "bb_width_min": 0.01,
+    "bb_width_max": 0.05,
+    "setup_quality_weights": {
+      "rsi": 0.2,
+      "ema_alignment": 0.2,
+      "adx": 0.2,
+      "trend_alignment": 0.2,
+      "bb_width": 0.2
+    }
+  },
+
+  "time_filters": {
+    "bad_hours": [],
+    "bad_weekdays": [],
+    "min_samples": 20,
+    "avg_r_threshold": -0.2
   },
   "leverage": {
     "trend": 2.0,

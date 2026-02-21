@@ -69,15 +69,22 @@ class FeatureEngine:
             50,  # EMA50
             self.config.zscore_lookback
         )
+        trend_cfg = None
         if self.regime_config is not None:
             chop_cfg = self.regime_config.chop
+            trend_cfg = self.regime_config.trend_score
             min_bars_5m = max(
                 min_bars_5m,
                 chop_cfg.er_lookback + 1,
                 chop_cfg.flip_lookback + 1,
                 chop_cfg.bb_width_percentile_lookback,
+                chop_cfg.choppiness_lookback + 1,
+                trend_cfg.adx_momentum_lookback + 1,
             )
         min_bars_1h = 50  # For EMA50 on 1h
+        if self.regime_config is not None:
+            trend_cfg = self.regime_config.trend_score
+            min_bars_1h = max(min_bars_1h, trend_cfg.ema_slope_lookback_1h + 1)
 
         # Check if we have enough data
         if not self.candle_store.has_enough_data(symbol, "5m", min_bars_5m):
@@ -133,12 +140,16 @@ class FeatureEngine:
             except (IndexError, TypeError):
                 pass
 
-        # CHOP features (5m)
+        # CHOP / trend features (5m/1h)
         kaufman_er_val = None
         flip_rate_val = None
         bb_width_pct_rank_val = None
+        choppiness_val = None
+        adx_momentum_val = None
+        ema20_1h_slope_val = None
         if self.regime_config is not None:
             chop_cfg = self.regime_config.chop
+            trend_cfg = self.regime_config.trend_score
             if len(df_5m['close']) >= chop_cfg.er_lookback + 1:
                 kaufman_er_val = features.kaufman_er(
                     df_5m['close'], lookback=chop_cfg.er_lookback
@@ -147,6 +158,11 @@ class FeatureEngine:
                 flip_rate_val = features.flip_rate(
                     df_5m['close'], lookback=chop_cfg.flip_lookback
                 )
+            if len(df_5m['close']) >= chop_cfg.choppiness_lookback + 1:
+                choppiness_val = features.choppiness_index(
+                    df_5m['high'], df_5m['low'], df_5m['close'],
+                    lookback=chop_cfg.choppiness_lookback
+                )
             if chop_cfg.bb_width_percentile_lookback and bb_result is not None:
                 bb_width_series = bb_result[3]
                 if len(bb_width_series) >= chop_cfg.bb_width_percentile_lookback:
@@ -154,6 +170,10 @@ class FeatureEngine:
                         bb_width_series,
                         lookback=chop_cfg.bb_width_percentile_lookback
                     )
+            if trend_cfg and adx_series is not None and len(adx_series) >= trend_cfg.adx_momentum_lookback + 1:
+                adx_momentum_val = features.adx_momentum(
+                    adx_series, lookback=trend_cfg.adx_momentum_lookback
+                )
 
         # Rolling 20-bar high/low (for breakout strategy)
         high_20_series = df_5m['high'].rolling(window=20).max()
@@ -168,6 +188,11 @@ class FeatureEngine:
             if ema20_1h_val is not None and ema50_1h_val is not None:
                 denom = max(abs(last_close_1h), 1e-9)
                 ema1h_spread_pct = abs(ema20_1h_val - ema50_1h_val) / denom
+
+            if trend_cfg and ema20_1h_series is not None and len(ema20_1h_series) >= trend_cfg.ema_slope_lookback_1h + 1:
+                ema20_1h_slope_val = features.ema_slope(
+                    ema20_1h_series, lookback=trend_cfg.ema_slope_lookback_1h
+                )
 
             snapshot = {
                 "rsi14": float(rsi_series.iloc[-1]) if rsi_series is not None else None,
@@ -189,6 +214,9 @@ class FeatureEngine:
                 "atr_z": float(atr_z_series.iloc[-1]) if atr_z_series is not None else None,
                 "kaufman_er": kaufman_er_val,
                 "flip_rate": flip_rate_val,
+                "choppiness": choppiness_val,
+                "adx_momentum": adx_momentum_val,
+                "ema20_1h_slope": ema20_1h_slope_val,
                 "ema1h_spread_pct": ema1h_spread_pct,
                 "bb_width_pct_rank": bb_width_pct_rank_val,
             }
@@ -201,7 +229,8 @@ class FeatureEngine:
             optional_keys = {
                 "bb_middle", "bb_upper", "bb_lower", "high_20", "low_20",
                 "ema20_4h", "ema50_4h", "book_imbalance_ratio",
-                "kaufman_er", "flip_rate", "ema1h_spread_pct", "bb_width_pct_rank",
+                "kaufman_er", "flip_rate", "choppiness", "adx_momentum",
+                "ema20_1h_slope", "ema1h_spread_pct", "bb_width_pct_rank",
             }
             core_snapshot = {k: v for k, v in snapshot.items() if k not in optional_keys}
             if any(v is None for v in core_snapshot.values()):

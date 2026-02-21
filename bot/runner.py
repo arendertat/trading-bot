@@ -71,6 +71,7 @@ from bot.strategies.trend_breakout import TrendBreakoutStrategy
 from bot.strategies.range_mean_reversion import RangeMeanReversionStrategy
 from bot.universe.selector import UniverseSelector
 from bot.utils.logger import setup_logging
+from bot.utils.edge import compute_setup_quality, estimate_cost_gate
 
 
 logger = logging.getLogger("trading_bot.runner")
@@ -617,6 +618,13 @@ class BotRunner:
             return
         current_price = candles_5m[-1].close
 
+        # ── Time filters ─────────────────────────────────────────────
+        bad_hours = set(self.config.time_filters.bad_hours)
+        bad_weekdays = set(self.config.time_filters.bad_weekdays)
+        if now.hour in bad_hours or now.strftime("%a") in bad_weekdays:
+            logger.info(f"{symbol}: TIME_FILTER blocked entry")
+            return
+
         # ── Entry-time spread gate (pre-strategy) ─────────────────────
         if spread_pct is not None and spread_pct > self.config.universe.max_spread_pct:
             logger.info(
@@ -638,6 +646,9 @@ class BotRunner:
             ema50_1h=features_dict["ema50_1h"],
             kaufman_er=features_dict.get("kaufman_er"),
             flip_rate=features_dict.get("flip_rate"),
+            choppiness=features_dict.get("choppiness"),
+            adx_momentum=features_dict.get("adx_momentum"),
+            ema20_1h_slope=features_dict.get("ema20_1h_slope"),
             ema1h_spread_pct=features_dict.get("ema1h_spread_pct"),
             bb_width_pct_rank=features_dict.get("bb_width_pct_rank"),
             rsi_5m=features_dict.get("rsi14"),
@@ -710,6 +721,27 @@ class BotRunner:
             logger.info(f"{symbol}: risk rejected — {risk_result.rejection_reason}")
             return
 
+        ps = risk_result.position_size
+        if ps is None or not ps.approved:
+            logger.info(f"{symbol}: position sizing rejected")
+            return
+
+        # ── Cost-aware gate ─────────────────────────────────────────
+        setup_quality = compute_setup_quality(feature_set, signal.side, self.config.cost_gate)
+        cost_gate = estimate_cost_gate(
+            risk_usd=ps.risk_usd,
+            notional_usd=ps.notional_usd,
+            config=self.config.cost_gate,
+            setup_quality_score=setup_quality,
+        )
+        if cost_gate.expected_edge_r < (self.config.cost_gate.min_edge_over_cost_mult * cost_gate.estimated_cost_r):
+            logger.info(
+                f"{symbol}: COST_GATE reject (edge={cost_gate.expected_edge_r:.3f}R "
+                f"< {self.config.cost_gate.min_edge_over_cost_mult:.2f}x cost "
+                f"{cost_gate.estimated_cost_r:.3f}R)"
+            )
+            return
+
         # ── Paper fill ────────────────────────────────────────────────
         self._paper_fill_entry(
             symbol=symbol,
@@ -719,6 +751,7 @@ class BotRunner:
             strategy_name=strategy.name,
             current_price=current_price,
             now=now,
+            cost_gate=cost_gate,
         )
 
     # ------------------------------------------------------------------
@@ -734,6 +767,7 @@ class BotRunner:
         strategy_name: str,
         current_price: float,
         now: datetime,
+        cost_gate,
     ) -> None:
         """Simulate LIMIT order fill with slippage + maker fee."""
         slippage = self.config.execution.paper_slippage_limit_pct
@@ -789,7 +823,13 @@ class BotRunner:
                     "regime": regime_result.regime.value,
                     "confidence": regime_result.confidence,
                     "reasons": regime_result.reasons,
-                }
+                },
+                "cost_gate": {
+                    "estimated_cost_usd": cost_gate.estimated_cost_usd if cost_gate else None,
+                    "estimated_cost_r": cost_gate.estimated_cost_r if cost_gate else None,
+                    "expected_edge_r": cost_gate.expected_edge_r if cost_gate else None,
+                    "setup_quality_score": cost_gate.setup_quality_score if cost_gate else None,
+                },
             },
         )
 
