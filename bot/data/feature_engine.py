@@ -6,7 +6,7 @@ import pandas as pd
 
 from bot.data.candle_store import CandleStore
 from bot.data import features
-from bot.config.models import TimeframesConfig
+from bot.config.models import TimeframesConfig, RegimeConfig
 
 
 logger = logging.getLogger("trading_bot.data")
@@ -19,7 +19,12 @@ class FeatureEngine:
     Returns latest feature values per symbol based on stored candle history.
     """
 
-    def __init__(self, candle_store: CandleStore, timeframes_config: TimeframesConfig):
+    def __init__(
+        self,
+        candle_store: CandleStore,
+        timeframes_config: TimeframesConfig,
+        regime_config: Optional[RegimeConfig] = None,
+    ):
         """
         Initialize FeatureEngine.
 
@@ -29,6 +34,7 @@ class FeatureEngine:
         """
         self.candle_store = candle_store
         self.config = timeframes_config
+        self.regime_config = regime_config
 
         logger.info("FeatureEngine initialized")
 
@@ -45,6 +51,10 @@ class FeatureEngine:
         - Bollinger Band width on 5m
         - Volume z-score on 5m
         - ATR z-score on 5m
+        - Kaufman ER on 5m (configurable)
+        - Flip rate on 5m (configurable)
+        - EMA20/EMA50 spread pct on 1h
+        - BB width percentile rank (optional, configurable)
 
         Args:
             symbol: Trading pair
@@ -59,6 +69,14 @@ class FeatureEngine:
             50,  # EMA50
             self.config.zscore_lookback
         )
+        if self.regime_config is not None:
+            chop_cfg = self.regime_config.chop
+            min_bars_5m = max(
+                min_bars_5m,
+                chop_cfg.er_lookback + 1,
+                chop_cfg.flip_lookback + 1,
+                chop_cfg.bb_width_percentile_lookback,
+            )
         min_bars_1h = 50  # For EMA50 on 1h
 
         # Check if we have enough data
@@ -115,20 +133,50 @@ class FeatureEngine:
             except (IndexError, TypeError):
                 pass
 
+        # CHOP features (5m)
+        kaufman_er_val = None
+        flip_rate_val = None
+        bb_width_pct_rank_val = None
+        if self.regime_config is not None:
+            chop_cfg = self.regime_config.chop
+            if len(df_5m['close']) >= chop_cfg.er_lookback + 1:
+                kaufman_er_val = features.kaufman_er(
+                    df_5m['close'], lookback=chop_cfg.er_lookback
+                )
+            if len(df_5m['close']) >= chop_cfg.flip_lookback + 1:
+                flip_rate_val = features.flip_rate(
+                    df_5m['close'], lookback=chop_cfg.flip_lookback
+                )
+            if chop_cfg.bb_width_percentile_lookback and bb_result is not None:
+                bb_width_series = bb_result[3]
+                if len(bb_width_series) >= chop_cfg.bb_width_percentile_lookback:
+                    bb_width_pct_rank_val = features.percentile_rank_last(
+                        bb_width_series,
+                        lookback=chop_cfg.bb_width_percentile_lookback
+                    )
+
         # Rolling 20-bar high/low (for breakout strategy)
         high_20_series = df_5m['high'].rolling(window=20).max()
         low_20_series = df_5m['low'].rolling(window=20).min()
 
         # Extract latest values
         try:
+            last_close_1h = float(df_1h['close'].iloc[-1])
+            ema20_1h_val = float(ema20_1h_series.iloc[-1]) if ema20_1h_series is not None else None
+            ema50_1h_val = float(ema50_1h_series.iloc[-1]) if ema50_1h_series is not None else None
+            ema1h_spread_pct = None
+            if ema20_1h_val is not None and ema50_1h_val is not None:
+                denom = max(abs(last_close_1h), 1e-9)
+                ema1h_spread_pct = abs(ema20_1h_val - ema50_1h_val) / denom
+
             snapshot = {
                 "rsi14": float(rsi_series.iloc[-1]) if rsi_series is not None else None,
                 "adx14": float(adx_series.iloc[-1]) if adx_series is not None else None,
                 "atr14": float(atr_series.iloc[-1]) if atr_series is not None else None,
                 "ema20_5m": float(ema20_5m_series.iloc[-1]) if ema20_5m_series is not None else None,
                 "ema50_5m": float(ema50_5m_series.iloc[-1]) if ema50_5m_series is not None else None,
-                "ema20_1h": float(ema20_1h_series.iloc[-1]) if ema20_1h_series is not None else None,
-                "ema50_1h": float(ema50_1h_series.iloc[-1]) if ema50_1h_series is not None else None,
+                "ema20_1h": ema20_1h_val,
+                "ema50_1h": ema50_1h_val,
                 "ema20_4h": ema20_4h_val,
                 "ema50_4h": ema50_4h_val,
                 "bb_width": float(bb_result[3].iloc[-1]) if bb_result is not None else None,
@@ -139,6 +187,10 @@ class FeatureEngine:
                 "low_20": float(low_20_series.iloc[-1]),
                 "vol_z": float(vol_z_series.iloc[-1]) if vol_z_series is not None else None,
                 "atr_z": float(atr_z_series.iloc[-1]) if atr_z_series is not None else None,
+                "kaufman_er": kaufman_er_val,
+                "flip_rate": flip_rate_val,
+                "ema1h_spread_pct": ema1h_spread_pct,
+                "bb_width_pct_rank": bb_width_pct_rank_val,
             }
 
             # book_imbalance_ratio is fetched externally (runner) and injected
@@ -146,8 +198,11 @@ class FeatureEngine:
 
             # Validate core features are present
             # ema20_4h/ema50_4h are optional (may be None during 4h warmup)
-            optional_keys = {"bb_middle", "bb_upper", "bb_lower", "high_20", "low_20",
-                             "ema20_4h", "ema50_4h", "book_imbalance_ratio"}
+            optional_keys = {
+                "bb_middle", "bb_upper", "bb_lower", "high_20", "low_20",
+                "ema20_4h", "ema50_4h", "book_imbalance_ratio",
+                "kaufman_er", "flip_rate", "ema1h_spread_pct", "bb_width_pct_rank",
+            }
             core_snapshot = {k: v for k, v in snapshot.items() if k not in optional_keys}
             if any(v is None for v in core_snapshot.values()):
                 logger.warning(f"Some core features are None for {symbol}: {core_snapshot}")

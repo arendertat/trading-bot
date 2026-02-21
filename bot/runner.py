@@ -113,7 +113,11 @@ class BotRunner:
         # ── Data pipeline ─────────────────────────────────────────────
         self._candle_store = CandleStore()
         self._klines_ingestor = KlinesIngestor(self._client, self._candle_store)
-        self._feature_engine = FeatureEngine(self._candle_store, config.timeframes)
+        self._feature_engine = FeatureEngine(
+            self._candle_store,
+            config.timeframes,
+            config.regime,
+        )
 
         # ── WebSocket / REST kline feed (Özellik 2) ───────────────────
         # KlineStream wraps WSManager (WebSocket-primary) + KlinesIngestor (REST fallback).
@@ -153,6 +157,7 @@ class BotRunner:
             performance_tracker=self._perf_tracker,
             strategies=self._strategies,
             stability_hours=config.performance.max_strategy_switches_per_day * 24,
+            log_dir=config.logging.log_dir,
         )
 
         # ── Trailing stop manager ─────────────────────────────────────
@@ -565,9 +570,15 @@ class BotRunner:
         # Fetch order book and compute bid/ask volume ratio.
         # Non-fatal: if fetch fails, book_imbalance_ratio stays None.
         book_imbalance_ratio: Optional[float] = None
+        spread_pct: Optional[float] = None
         try:
             ob = self._client.fetch_order_book(symbol, limit=20)
             book_imbalance_ratio = ob.get("imbalance_ratio")
+            best_bid = ob.get("best_bid") or 0.0
+            best_ask = ob.get("best_ask") or 0.0
+            if best_bid > 0 and best_ask > 0:
+                mid = (best_bid + best_ask) / 2.0
+                spread_pct = (best_ask - best_bid) / max(mid, 1e-9)
             logger.debug(
                 f"{symbol}: book imbalance ratio={book_imbalance_ratio:.3f}"
                 if book_imbalance_ratio is not None else f"{symbol}: book imbalance N/A"
@@ -600,7 +611,22 @@ class BotRunner:
             logger.warning(f"{symbol}: missing feature {e} — skipping")
             return
 
+        # ── Current price from last candle ────────────────────────────
+        candles_5m = self._candle_store.get_candles(symbol, "5m")
+        if not candles_5m:
+            return
+        current_price = candles_5m[-1].close
+
+        # ── Entry-time spread gate (pre-strategy) ─────────────────────
+        if spread_pct is not None and spread_pct > self.config.universe.max_spread_pct:
+            logger.info(
+                f"{symbol}: SPREAD_GATE reject "
+                f"(spread={spread_pct:.5f} > max={self.config.universe.max_spread_pct:.5f})"
+            )
+            return
+
         # ── Detect regime ─────────────────────────────────────────────
+        mr_cfg = self.config.strategies.range_mean_reversion
         regime_result = self._regime_detector.detect_regime(
             symbol=symbol,
             adx=features_dict.get("adx14") or 0.0,
@@ -610,6 +636,16 @@ class BotRunner:
             ema50_5m=features_dict["ema50_5m"],
             ema20_1h=features_dict["ema20_1h"],
             ema50_1h=features_dict["ema50_1h"],
+            kaufman_er=features_dict.get("kaufman_er"),
+            flip_rate=features_dict.get("flip_rate"),
+            ema1h_spread_pct=features_dict.get("ema1h_spread_pct"),
+            bb_width_pct_rank=features_dict.get("bb_width_pct_rank"),
+            rsi_5m=features_dict.get("rsi14"),
+            bb_upper=features_dict.get("bb_upper"),
+            bb_lower=features_dict.get("bb_lower"),
+            last_close_5m=current_price,
+            rsi_extreme_low=mr_cfg.rsi_long_extreme,
+            rsi_extreme_high=mr_cfg.rsi_short_extreme,
         )
 
         if regime_result.regime == RegimeType.CHOP_NO_TRADE:
@@ -627,16 +663,11 @@ class BotRunner:
         strategy = self._strategy_selector.select_strategy(
             regime=regime_result.regime,
             symbol=symbol,
+            timestamp=int(now.timestamp()),
         )
         if strategy is None:
             logger.debug(f"{symbol}: no strategy for {regime_result.regime.value}")
             return
-
-        # ── Current price from last candle ────────────────────────────
-        candles_5m = self._candle_store.get_candles(symbol, "5m")
-        if not candles_5m:
-            return
-        current_price = candles_5m[-1].close
 
         # ── Generate signal ───────────────────────────────────────────
         signal = strategy.generate_signal(
@@ -752,6 +783,14 @@ class BotRunner:
             fees_paid_usd=entry_fee_usd,
             strategy=strategy_name,
             regime=regime_result.regime.value,
+            confidence=regime_result.confidence,
+            metadata={
+                "regime_snapshot": {
+                    "regime": regime_result.regime.value,
+                    "confidence": regime_result.confidence,
+                    "reasons": regime_result.reasons,
+                }
+            },
         )
 
         self._state.add_position(position)

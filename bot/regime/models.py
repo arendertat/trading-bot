@@ -18,6 +18,12 @@ class RegimeResult:
     ema50_1h: float
     reasons: list[str]
     trend_direction: Optional[str] = None  # "bullish" or "bearish" if TREND
+    # Diagnostics
+    trend_score: Optional[float] = None
+    range_score: Optional[float] = None
+    high_vol_score: Optional[float] = None
+    chop_score: Optional[int] = None
+    chop_signals: Optional[list[bool]] = None
 
     def __post_init__(self):
         """Ensure confidence is clamped to [0, 1]"""

@@ -34,10 +34,15 @@ class BacktestTrade:
     pnl_r: float               # PnL in R-multiples
     risk_usd: float
     fees_usd: float
+    slippage_usd: float
+    funding_usd: float
+    gross_pnl_usd: float
+    net_pnl_usd: float
     strategy: str
     regime: str
     stop_price: float
     tp_price: Optional[float]
+    regime_confidence: Optional[float] = None
     max_adverse_excursion: float = 0.0   # Worst unrealised loss during trade
     max_favourable_excursion: float = 0.0  # Best unrealised profit during trade
     # Early window stats (first N bars after entry)
@@ -70,6 +75,9 @@ class OpenBacktestPosition:
     atr_trail_mult: float = 2.0
     initial_stop_price: float = 0.0
     fees_usd: float = 0.0
+    entry_price_raw: float = 0.0
+    entry_slippage_usd: float = 0.0
+    regime_confidence: Optional[float] = None
     max_adverse_excursion: float = 0.0
     max_favourable_excursion: float = 0.0
     # Early window tracking (first N bars after entry)
@@ -201,6 +209,7 @@ class BacktestAccount:
         entry_time: datetime,
         strategy: str,
         regime: str,
+        regime_confidence: Optional[float] = None,
         trail_after_r: float = 1.0,
         atr_trail_mult: float = 2.0,
     ) -> Optional[OpenBacktestPosition]:
@@ -212,8 +221,10 @@ class BacktestAccount:
         # Apply entry slippage
         if side == OrderSide.LONG:
             fill_price = entry_price_raw * (1.0 + self._slippage_pct)
+            entry_slippage_usd = (fill_price - entry_price_raw) * quantity
         else:
             fill_price = entry_price_raw * (1.0 - self._slippage_pct)
+            entry_slippage_usd = (entry_price_raw - fill_price) * quantity
 
         entry_fee = notional_usd * self._maker_fee_pct
 
@@ -239,6 +250,9 @@ class BacktestAccount:
             atr_trail_mult=atr_trail_mult,
             initial_stop_price=stop_price,
             fees_usd=entry_fee,
+            entry_price_raw=entry_price_raw,
+            entry_slippage_usd=entry_slippage_usd,
+            regime_confidence=regime_confidence,
         )
         self._open[trade_id] = pos
         self._equity -= entry_fee
@@ -267,27 +281,33 @@ class BacktestAccount:
         if is_market:
             if pos.side == OrderSide.LONG:
                 fill_price = exit_price_raw * (1.0 - self._slippage_pct)
+                exit_slippage_usd = (exit_price_raw - fill_price) * pos.quantity
             else:
                 fill_price = exit_price_raw * (1.0 + self._slippage_pct)
+                exit_slippage_usd = (fill_price - exit_price_raw) * pos.quantity
         else:
             fill_price = exit_price_raw  # limit/stop fills at trigger price
+            exit_slippage_usd = 0.0
 
         exit_fee = pos.notional_usd * fee_pct
         total_fees = pos.fees_usd + exit_fee
 
-        # PnL calculation
+        # PnL calculation (gross from raw prices)
         if pos.side == OrderSide.LONG:
-            gross_pnl = (fill_price - pos.entry_price) * pos.quantity
+            gross_pnl = (exit_price_raw - pos.entry_price_raw) * pos.quantity
         else:
-            gross_pnl = (pos.entry_price - fill_price) * pos.quantity
+            gross_pnl = (pos.entry_price_raw - exit_price_raw) * pos.quantity
 
-        net_pnl = gross_pnl - exit_fee
+        slippage_usd = pos.entry_slippage_usd + exit_slippage_usd
+        funding_usd = 0.0
+        net_pnl = gross_pnl - total_fees - slippage_usd - funding_usd
         pnl_r = net_pnl / pos.risk_usd if pos.risk_usd > 0 else 0.0
         early_mae_r = pos.early_mae_usd / pos.risk_usd if pos.risk_usd > 0 else 0.0
         early_mfe_r = pos.early_mfe_usd / pos.risk_usd if pos.risk_usd > 0 else 0.0
 
-        # Update equity
-        self._equity += net_pnl
+        # Update equity (entry fee already applied at entry)
+        equity_delta = gross_pnl - slippage_usd - exit_fee - funding_usd
+        self._equity += equity_delta
         self._daily_pnl += net_pnl
         self._weekly_pnl += net_pnl
 
@@ -306,8 +326,13 @@ class BacktestAccount:
             pnl_r=pnl_r,
             risk_usd=pos.risk_usd,
             fees_usd=total_fees,
+            slippage_usd=slippage_usd,
+            funding_usd=funding_usd,
+            gross_pnl_usd=gross_pnl,
+            net_pnl_usd=net_pnl,
             strategy=pos.strategy,
             regime=pos.regime,
+            regime_confidence=pos.regime_confidence,
             stop_price=pos.stop_price,
             tp_price=pos.tp_price,
             max_adverse_excursion=pos.max_adverse_excursion,

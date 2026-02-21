@@ -84,6 +84,35 @@ class RiskConfig(BaseModel):
     max_single_symbol_exposure_pct: float = Field(default=1.0, ge=0.0, le=5.0)
 
 
+class RegimeChopConfig(BaseModel):
+    """CHOP detection configuration"""
+    er_lookback: int = Field(default=20, ge=5, le=200)
+    er_max: float = Field(default=0.25, ge=0.0, le=1.0)
+    flip_lookback: int = Field(default=20, ge=5, le=200)
+    flip_rate_min: float = Field(default=0.55, ge=0.0, le=1.0)
+    ema1h_spread_max: float = Field(default=0.001, ge=0.0, le=0.05)
+    bb_width_percentile_lookback: int = Field(default=100, ge=20, le=500)
+    bb_width_percentile_max: float = Field(default=0.20, ge=0.0, le=1.0)
+    bb_width_chop_max: Optional[float] = Field(default=None, ge=0.0, le=0.5)
+    score_threshold: int = Field(default=3, ge=1, le=5)
+    range_requires_extremes: bool = True
+    regime_persistence_bars: int = Field(default=2, ge=1, le=10)
+    regime_switch_cooldown_bars: int = Field(default=3, ge=0, le=20)
+
+    @model_validator(mode="after")
+    def validate_bb_width_gate(self):
+        has_percentile = (
+            self.bb_width_percentile_lookback is not None
+            and self.bb_width_percentile_max is not None
+        )
+        has_absolute = self.bb_width_chop_max is not None
+        if not (has_percentile or has_absolute):
+            raise ValueError(
+                "Either bb_width_percentile_* or bb_width_chop_max must be set"
+            )
+        return self
+
+
 class RegimeConfig(BaseModel):
     """Regime detection configuration"""
     trend_adx_min: float = Field(default=25, ge=15, le=50)
@@ -96,6 +125,8 @@ class RegimeConfig(BaseModel):
     # ADX eşikleri son 30 günlük ADX dağılımına göre otomatik ayarlanır
     adaptive_regime: bool = False
     adaptive_adx_window: int = Field(default=8640, ge=100, le=50000)  # 30d × 288 bar/gün
+    # CHOP detection parameters
+    chop: RegimeChopConfig = Field(default_factory=RegimeChopConfig)
 
 
 class StrategyTrendPullbackConfig(BaseModel):

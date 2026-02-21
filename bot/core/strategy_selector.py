@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from bot.core.performance_tracker import PerformanceTracker, StrategyMetrics
 from bot.core.constants import RegimeType
 from bot.strategies.base import Strategy
+from bot.utils.jsonl_logger import JsonlLogger
 
 logger = logging.getLogger("trading_bot.strategy_selector")
 
@@ -35,7 +36,8 @@ class StrategySelector:
         self,
         performance_tracker: PerformanceTracker,
         strategies: Dict[str, Strategy],
-        stability_hours: int = 24
+        stability_hours: int = 24,
+        log_dir: Optional[str] = None,
     ):
         """
         Initialize strategy selector.
@@ -48,6 +50,11 @@ class StrategySelector:
         self.performance_tracker = performance_tracker
         self.strategies = strategies
         self.stability_hours = stability_hours
+        self._selection_logger = (
+            JsonlLogger(f"{log_dir.rstrip('/')}/strategy_selection.jsonl")
+            if log_dir
+            else None
+        )
 
         # Track last selection per regime for stability constraint
         self.last_selection_time: Dict[RegimeType, datetime] = {}
@@ -61,7 +68,8 @@ class StrategySelector:
     def select_strategy(
         self,
         regime: RegimeType,
-        symbol: str
+        symbol: str,
+        timestamp: Optional[int] = None,
     ) -> Optional[Strategy]:
         """
         Select best strategy for current regime based on performance.
@@ -85,12 +93,22 @@ class StrategySelector:
 
         if not candidate_strategies:
             logger.warning(f"{symbol}: No strategies compatible with {regime.value} regime")
+            self._log_selection(
+                symbol=symbol,
+                regime=regime,
+                timestamp=timestamp,
+                candidates=[],
+                rejected=[{"name": name, "reason": "incompatible"} for name in self.strategies],
+                selected=None,
+                reason="no_compatible_strategies",
+            )
             return None
 
         # Calculate scores for all candidates
         scored_strategies: List[tuple[str, float, StrategyMetrics]] = []
         strategies_without_history: List[str] = []
 
+        rejected: List[dict] = []
         for strategy_name in candidate_strategies:
             metrics = self.performance_tracker.get_metrics(strategy_name)
 
@@ -98,6 +116,7 @@ class StrategySelector:
                 # Insufficient trade history - track for cold start fallback
                 logger.debug(f"{strategy_name}: Insufficient trade history for scoring")
                 strategies_without_history.append(strategy_name)
+                rejected.append({"name": strategy_name, "reason": "insufficient_history"})
                 continue
 
             # Calculate confidence score
@@ -108,6 +127,7 @@ class StrategySelector:
                 logger.debug(
                     f"{strategy_name}: Confidence {confidence:.3f} < threshold {self.CONFIDENCE_THRESHOLD}"
                 )
+                rejected.append({"name": strategy_name, "reason": "low_confidence", "confidence": confidence})
                 continue
 
             scored_strategies.append((strategy_name, confidence, metrics))
@@ -124,9 +144,27 @@ class StrategySelector:
                 )
                 self.current_selection[regime] = fallback_strategy
                 self.last_selection_time[regime] = datetime.utcnow()
+                self._log_selection(
+                    symbol=symbol,
+                    regime=regime,
+                    timestamp=timestamp,
+                    candidates=strategies_without_history,
+                    rejected=rejected,
+                    selected=fallback_strategy,
+                    reason="cold_start",
+                )
                 return self.strategies[fallback_strategy]
             else:
                 logger.info(f"{symbol}: No strategies meet confidence threshold for {regime.value}")
+                self._log_selection(
+                    symbol=symbol,
+                    regime=regime,
+                    timestamp=timestamp,
+                    candidates=candidate_strategies,
+                    rejected=rejected,
+                    selected=None,
+                    reason="no_confident_strategies",
+                )
                 return None
 
         # Sort by confidence (descending)
@@ -141,6 +179,16 @@ class StrategySelector:
                 logger.debug(
                     f"{symbol}: Stability constraint active, keeping {current} for {regime.value}"
                 )
+                self._log_selection(
+                    symbol=symbol,
+                    regime=regime,
+                    timestamp=timestamp,
+                    candidates=candidate_strategies,
+                    rejected=rejected,
+                    selected=current,
+                    reason="stability_constraint",
+                    scored=scored_strategies,
+                )
                 return self.strategies[current]
             else:
                 # No current strategy, allow switch
@@ -154,8 +202,54 @@ class StrategySelector:
             f"{symbol}: Selected {best_strategy_name} for {regime.value} "
             f"(confidence={best_confidence:.3f}, expectancy_r={best_metrics.expectancy_r:.3f})"
         )
+        self._log_selection(
+            symbol=symbol,
+            regime=regime,
+            timestamp=timestamp,
+            candidates=candidate_strategies,
+            rejected=rejected,
+            selected=best_strategy_name,
+            reason="selected",
+            scored=scored_strategies,
+        )
 
         return self.strategies[best_strategy_name]
+
+    def _log_selection(
+        self,
+        symbol: str,
+        regime: RegimeType,
+        timestamp: Optional[int],
+        candidates: List[str],
+        rejected: List[dict],
+        selected: Optional[str],
+        reason: str,
+        scored: Optional[List[tuple[str, float, StrategyMetrics]]] = None,
+    ) -> None:
+        if self._selection_logger is None:
+            return
+        scored_payload = []
+        if scored:
+            for name, confidence, metrics in scored:
+                scored_payload.append({
+                    "name": name,
+                    "confidence": confidence,
+                    "expectancy_r": metrics.expectancy_r,
+                    "max_drawdown_pct": metrics.max_drawdown_pct,
+                    "total_trades": metrics.total_trades,
+                })
+        self._selection_logger.log(
+            {
+                "ts": timestamp,
+                "symbol": symbol,
+                "regime": regime.value,
+                "candidates": candidates,
+                "rejected": rejected,
+                "scored": scored_payload,
+                "selected": selected,
+                "reason": reason,
+            }
+        )
 
     def _get_regime_compatible_strategies(self, regime: RegimeType) -> List[str]:
         """

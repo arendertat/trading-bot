@@ -294,3 +294,37 @@ class TestLogReturns:
         assert result is not None
         # Price decreased, so log return should be negative
         assert result.iloc[-1] < 0
+
+
+class TestChopFeatures:
+    """Test CHOP-related features"""
+
+    def test_kaufman_er_trend_high(self):
+        """Monotonic trend should yield high ER"""
+        close = pd.Series(range(100, 140))
+        er = features.kaufman_er(close, lookback=20)
+        assert er is not None
+        assert er > 0.7
+
+    def test_kaufman_er_chop_low(self):
+        """Alternating series should yield low ER"""
+        close = pd.Series([100, 101, 100, 101, 100, 101, 100, 101, 100, 101, 100,
+                           101, 100, 101, 100, 101, 100, 101, 100, 101, 100, 101])
+        er = features.kaufman_er(close, lookback=20)
+        assert er is not None
+        assert er < 0.3
+
+    def test_flip_rate_steady_low(self):
+        """Steady uptrend should have low flip rate"""
+        close = pd.Series(range(100, 125))
+        fr = features.flip_rate(close, lookback=20)
+        assert fr is not None
+        assert fr <= 0.1
+
+    def test_flip_rate_alternating_high(self):
+        """Alternating returns should have high flip rate"""
+        close = pd.Series([100, 101, 100, 101, 100, 101, 100, 101, 100, 101, 100,
+                           101, 100, 101, 100, 101, 100, 101, 100, 101, 100, 101])
+        fr = features.flip_rate(close, lookback=20)
+        assert fr is not None
+        assert fr >= 0.8

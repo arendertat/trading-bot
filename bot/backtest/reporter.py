@@ -19,6 +19,7 @@ Computes summary statistics from BacktestResult:
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -103,6 +104,12 @@ class BacktestReport:
     best_trade_r: float
     worst_trade_r: float
     profit_factor: float
+    total_gross_pnl_usd: float
+    total_slippage_usd: float
+    total_funding_usd: float
+    total_net_pnl_usd: float
+    avg_fee_per_trade: float
+    avg_slippage_per_trade: float
 
     # Risk metrics
     max_drawdown_pct: float
@@ -117,46 +124,50 @@ class BacktestReport:
     eod_exits: int
 
     # Detailed exit stats
-    exit_stats: Dict[str, ExitStats] = field(default_factory=dict)
+    exit_stats: Dict[str, ExitStats]
 
     # MAE/MFE analysis
-    mae_mfe: MAEMFEStats = field(default_factory=MAEMFEStats)
+    mae_mfe: MAEMFEStats
 
     # Entry quality
-    early_reversal_pct: float = 0.0
-    early_reversal_count: int = 0
-    early_reversal_threshold_r: float = -0.5
-    early_window_bars: int = 3
+    early_reversal_pct: float
+    early_reversal_count: int
+    early_reversal_threshold_r: float
+    early_window_bars: int
 
     # Time analysis
-    time_stats: TimeStats = field(default_factory=TimeStats)
+    time_stats: TimeStats
 
     # Strategy × Regime matrix  regime → strategy → {trades, win_rate, avg_r, pnl_usd}
-    strategy_regime_matrix: Dict[str, Dict[str, Dict[str, float]]] = field(default_factory=dict)
+    strategy_regime_matrix: Dict[str, Dict[str, Dict[str, float]]]
 
     # Consecutive loss analysis
-    max_consecutive_losses: int = 0
-    max_consecutive_wins: int = 0
-    avg_consecutive_losses: float = 0.0
-    worst_loss_streak_pnl_usd: float = 0.0   # total loss during worst streak
+    max_consecutive_losses: int
+    max_consecutive_wins: int
+    avg_consecutive_losses: float
+    worst_loss_streak_pnl_usd: float   # total loss during worst streak
 
     # Kill switch
-    kill_switch_blocks: int = 0   # estimated from trade gaps > 7 days
+    kill_switch_blocks: int   # estimated from trade gaps > 7 days
 
     # Per-strategy breakdown
-    by_strategy: Dict[str, StrategyStats] = field(default_factory=dict)
+    by_strategy: Dict[str, StrategyStats]
 
     # Per-regime breakdown
-    by_regime: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    by_regime: Dict[str, Dict[str, float]]
+    regime_distribution: Dict[str, Dict[str, float]]
+    monthly_summary: List[Dict[str, float]]
+    drawdown_episodes: List[Dict[str, float]]
 
     # Params
-    symbols: List[str] = field(default_factory=list)
-    start: str = ""
-    end: str = ""
-    total_bars: int = 0
-    total_signals: int = 0
-    total_entries: int = 0
-    rejected_risk: int = 0
+    symbols: List[str]
+    start: str
+    end: str
+    total_bars: int
+    total_signals: int
+    total_entries: int
+    rejected_risk: int
+    spread_gate_rejects: int
 
     def print_summary(self) -> None:
         """Print a human-readable summary to stdout."""
@@ -182,6 +193,10 @@ class BacktestReport:
         print(f"  Best trade:    {self.best_trade_r:>+11.3f}R")
         print(f"  Worst trade:   {self.worst_trade_r:>+11.3f}R")
         print(f"  Total fees:    {self.total_fees_usd:>11.2f} USD")
+        print(f"  Total gross:   {self.total_gross_pnl_usd:>11.2f} USD")
+        print(f"  Total slippage:{self.total_slippage_usd:>11.2f} USD")
+        print(f"  Total funding: {self.total_funding_usd:>11.2f} USD")
+        print(f"  Total net:     {self.total_net_pnl_usd:>11.2f} USD")
         print(sep)
 
         # ── Exit analysis ──────────────────────────────────────────────
@@ -275,7 +290,8 @@ class BacktestReport:
             print(sep)
 
         print(f"  Signals: {self.total_signals}  |  Entries: {self.total_entries}  |  "
-              f"Rejected: {self.rejected_risk}  |  Bars: {self.total_bars:,}")
+              f"Rejected: {self.rejected_risk}  |  Spread gate: {self.spread_gate_rejects}  "
+              f"|  Bars: {self.total_bars:,}")
         if self.early_reversal_count > 0:
             print(
                 f"  Early reversals: {self.early_reversal_count} "
@@ -317,6 +333,10 @@ def build_report(result: BacktestResult) -> BacktestReport:
 
     total_pnl = sum(t.pnl_usd for t in trades)
     total_fees = sum(t.fees_usd for t in trades)
+    total_gross = sum(getattr(t, "gross_pnl_usd", 0.0) for t in trades)
+    total_slippage = sum(getattr(t, "slippage_usd", 0.0) for t in trades)
+    total_funding = sum(getattr(t, "funding_usd", 0.0) for t in trades)
+    total_net = sum(getattr(t, "net_pnl_usd", t.pnl_usd) for t in trades)
     total_pnl_r = sum(t.pnl_r for t in trades)
     avg_pnl_r = total_pnl_r / total_trades if total_trades > 0 else 0.0
 
@@ -440,6 +460,12 @@ def build_report(result: BacktestResult) -> BacktestReport:
             "total_pnl_usd": sum(t.pnl_usd for t in group),
         }
 
+    monthly_summary = _compute_monthly_summary(trades, equity_curve)
+    regime_distribution = _compute_regime_distribution(
+        result.regime_bar_counts, trades
+    )
+    drawdown_episodes = _compute_drawdown_episodes(equity_curve, trades)
+
     return BacktestReport(
         initial_equity=initial,
         final_equity=final,
@@ -451,6 +477,12 @@ def build_report(result: BacktestResult) -> BacktestReport:
         win_rate=win_rate,
         total_pnl_usd=total_pnl,
         total_fees_usd=total_fees,
+        total_gross_pnl_usd=total_gross,
+        total_slippage_usd=total_slippage,
+        total_funding_usd=total_funding,
+        total_net_pnl_usd=total_net,
+        avg_fee_per_trade=(total_fees / total_trades) if total_trades > 0 else 0.0,
+        avg_slippage_per_trade=(total_slippage / total_trades) if total_trades > 0 else 0.0,
         avg_pnl_r=avg_pnl_r,
         avg_win_r=avg_win_r,
         avg_loss_r=avg_loss_r,
@@ -480,6 +512,9 @@ def build_report(result: BacktestResult) -> BacktestReport:
         early_window_bars=early_window_bars,
         by_strategy=by_strategy,
         by_regime=by_regime,
+        regime_distribution=regime_distribution,
+        monthly_summary=monthly_summary,
+        drawdown_episodes=drawdown_episodes,
         symbols=result.symbols,
         start=result.start.strftime("%Y-%m-%d"),
         end=result.end.strftime("%Y-%m-%d"),
@@ -487,6 +522,7 @@ def build_report(result: BacktestResult) -> BacktestReport:
         total_signals=result.total_signals,
         total_entries=result.total_entries,
         rejected_risk=result.rejected_risk,
+        spread_gate_rejects=result.rejected_spread,
     )
 
 
@@ -549,6 +585,124 @@ def _compute_sharpe(
         return 0.0
 
     return (mean_r / std_r) * math.sqrt(periods_per_year)
+
+
+def _compute_monthly_summary(
+    trades: List[BacktestTrade],
+    equity_curve: List[Tuple[int, float]],
+) -> List[Dict[str, float]]:
+    """Compute monthly summary stats."""
+    by_month: Dict[str, List[BacktestTrade]] = defaultdict(list)
+    for t in trades:
+        month = t.exit_time.strftime("%Y-%m")
+        by_month[month].append(t)
+
+    equity_by_month: Dict[str, List[Tuple[int, float]]] = defaultdict(list)
+    for ts, eq in equity_curve:
+        dt = datetime.utcfromtimestamp(ts / 1000)
+        month = dt.strftime("%Y-%m")
+        equity_by_month[month].append((ts, eq))
+
+    summary = []
+    for month in sorted(by_month.keys()):
+        group = by_month[month]
+        total_trades = len(group)
+        total_pnl = sum(t.pnl_usd for t in group)
+        total_fees = sum(t.fees_usd for t in group)
+        win_rate = sum(1 for t in group if t.pnl_usd > 0) / total_trades if total_trades else 0.0
+        expectancy = sum(t.pnl_r for t in group) / total_trades if total_trades else 0.0
+        eq_curve = equity_by_month.get(month, [])
+        dd_pct, dd_usd = _compute_max_drawdown(eq_curve) if len(eq_curve) > 1 else (0.0, 0.0)
+        summary.append({
+            "month": month,
+            "trades": total_trades,
+            "net_pnl_usd": total_pnl,
+            "fees_usd": total_fees,
+            "win_rate": win_rate,
+            "expectancy_r": expectancy,
+            "max_drawdown_pct": dd_pct,
+            "max_drawdown_usd": dd_usd,
+        })
+    return summary
+
+
+def _compute_regime_distribution(
+    regime_bar_counts: Dict[str, int],
+    trades: List[BacktestTrade],
+) -> Dict[str, Dict[str, float]]:
+    """Compute regime distribution for bars and trades."""
+    regime_trade_counts: Dict[str, int] = defaultdict(int)
+    for t in trades:
+        regime_trade_counts[t.regime] += 1
+
+    distribution: Dict[str, Dict[str, float]] = {}
+    all_regimes = set(regime_bar_counts.keys()) | set(regime_trade_counts.keys())
+    for regime in sorted(all_regimes):
+        distribution[regime] = {
+            "bars": float(regime_bar_counts.get(regime, 0)),
+            "trades": float(regime_trade_counts.get(regime, 0)),
+        }
+    return distribution
+
+
+def _compute_drawdown_episodes(
+    equity_curve: List[Tuple[int, float]],
+    trades: List[BacktestTrade],
+) -> List[Dict[str, float]]:
+    """Identify drawdown episodes from equity curve."""
+    episodes: List[Dict[str, float]] = []
+    if len(equity_curve) < 2:
+        return episodes
+
+    peak_eq = equity_curve[0][1]
+    peak_ts = equity_curve[0][0]
+    in_dd = False
+    trough_eq = peak_eq
+
+    for ts, eq in equity_curve[1:]:
+        if eq >= peak_eq:
+            if in_dd:
+                episodes.append(_build_dd_episode(peak_ts, ts, peak_eq, trough_eq, trades))
+                in_dd = False
+            peak_eq = eq
+            peak_ts = ts
+            trough_eq = eq
+            continue
+
+        in_dd = True
+        if eq < trough_eq:
+            trough_eq = eq
+
+    if in_dd:
+        episodes.append(_build_dd_episode(peak_ts, equity_curve[-1][0], peak_eq, trough_eq, trades))
+
+    return episodes
+
+
+def _build_dd_episode(
+    start_ts: int,
+    end_ts: int,
+    peak_eq: float,
+    trough_eq: float,
+    trades: List[BacktestTrade],
+) -> Dict[str, float]:
+    dd_usd = trough_eq - peak_eq
+    dd_pct = (dd_usd / peak_eq * 100.0) if peak_eq > 0 else 0.0
+    duration_days = (end_ts - start_ts) / 1000 / 86400
+    start_dt = datetime.fromtimestamp(start_ts / 1000, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(end_ts / 1000, tz=timezone.utc)
+    trade_count = sum(
+        1 for t in trades
+        if t.exit_time is not None and start_dt <= t.exit_time <= end_dt
+    )
+    return {
+        "start": start_dt.isoformat(),
+        "end": end_dt.isoformat(),
+        "depth_pct": dd_pct,
+        "depth_usd": dd_usd,
+        "duration_days": duration_days,
+        "trades": trade_count,
+    }
 
 
 def _compute_mae_mfe(trades: List[BacktestTrade]) -> MAEMFEStats:

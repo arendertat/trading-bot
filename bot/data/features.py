@@ -212,6 +212,79 @@ def zscore(values: pd.Series, window: int = 100) -> Optional[pd.Series]:
     return z
 
 
+def kaufman_er(close: pd.Series, lookback: int) -> Optional[float]:
+    """
+    Calculate Kaufman Efficiency Ratio (ER) for the latest bar.
+
+    Args:
+        close: Close price series
+        lookback: Lookback window
+
+    Returns:
+        Latest ER value in [0, 1] or None if insufficient data
+    """
+    if len(close) < lookback + 1:
+        return None
+
+    net_change = abs(close.iloc[-1] - close.iloc[-1 - lookback])
+    diffs = close.diff().abs().iloc[-lookback:]
+    sum_change = diffs.sum()
+    denom = max(sum_change, 1e-12)
+    er = net_change / denom
+    return float(max(0.0, min(1.0, er)))
+
+
+def flip_rate(close: pd.Series, lookback: int) -> Optional[float]:
+    """
+    Calculate flip rate of return signs over the latest lookback window.
+
+    Args:
+        close: Close price series
+        lookback: Lookback window
+
+    Returns:
+        Flip rate in [0, 1] or None if insufficient data
+    """
+    if len(close) < lookback + 1:
+        return None
+
+    returns = close.diff().iloc[-lookback:]
+    signs = returns.apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0)).tolist()
+    non_zero = [s for s in signs if s != 0]
+    if len(non_zero) < 2:
+        return 0.0
+
+    flips = 0
+    for prev, curr in zip(non_zero, non_zero[1:]):
+        if prev != curr:
+            flips += 1
+
+    return float(flips / (len(non_zero) - 1))
+
+
+def percentile_rank_last(values: pd.Series, lookback: int) -> Optional[float]:
+    """
+    Calculate percentile rank of the latest value within a rolling window.
+
+    Args:
+        values: Series of values
+        lookback: Window size
+
+    Returns:
+        Percentile rank in [0, 1] or None if insufficient data
+    """
+    if len(values) < lookback:
+        return None
+
+    window = values.iloc[-lookback:].dropna()
+    if window.empty:
+        return None
+
+    latest = window.iloc[-1]
+    rank = (window <= latest).sum() / len(window)
+    return float(max(0.0, min(1.0, rank)))
+
+
 def log_returns(close: pd.Series) -> Optional[pd.Series]:
     """
     Calculate log returns for correlation analysis.

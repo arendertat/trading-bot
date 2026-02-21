@@ -188,18 +188,19 @@ def main() -> None:
     # ── Optional JSON output ───────────────────────────────────────────
     if args.output:
         output_path = Path(args.output)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_dir = _make_output_dir(output_path, result)
+        output_dir.mkdir(parents=True, exist_ok=True)
         try:
             _save_report_json(
                 report=report,
                 result=result,
-                path=output_path,
+                output_dir=output_dir,
                 config=config,
                 run_started_at=run_started_at,
                 run_ended_at=run_ended_at,
                 config_path=str(config_path),
             )
-            logger.info(f"Report saved to {output_path}")
+            logger.info(f"Report saved to {output_dir}")
         except Exception as e:
             logger.warning(f"Failed to save report: {e}")
 
@@ -207,13 +208,13 @@ def main() -> None:
 def _save_report_json(
     report,
     result,
-    path: Path,
+    output_dir: Path,
     config,
     run_started_at: datetime,
     run_ended_at: datetime,
     config_path: str,
 ) -> None:
-    """Serialise report + raw trades to JSON."""
+    """Serialise report + raw trades to JSON (split across files)."""
     import dataclasses
     import subprocess
 
@@ -279,17 +280,42 @@ def _save_report_json(
         "universe": config.universe.model_dump(),
     }
 
-    payload = {
+    base = output_dir.name
+    meta_payload = {
         "run": run_meta,
         "config_snapshot": config_snapshot,
         "diagnostics": result.data_quality,
-        "report": _to_serialisable(report),
-        "trades": _to_serialisable(result.trades),
-        "equity_curve": result.equity_curve,
-        "features_at_entry": result.features_at_entry,
     }
-    with open(path, "w") as f:
-        json.dump(payload, f, indent=2, default=str)
+    report_payload = {
+        "run": run_meta,
+        "report": _to_serialisable(report),
+    }
+    trades_payload = {
+        "run": run_meta,
+        "trades": _to_serialisable(result.trades),
+    }
+    features_payload = {
+        "run": run_meta,
+        "features_at_entry": result.features_at_entry,
+        "equity_curve": result.equity_curve,
+    }
+
+    with open(output_dir / f"{base}_meta.json", "w") as f:
+        json.dump(meta_payload, f, indent=2, default=str)
+    with open(output_dir / f"{base}_report.json", "w") as f:
+        json.dump(report_payload, f, indent=2, default=str)
+    with open(output_dir / f"{base}_trades.json", "w") as f:
+        json.dump(trades_payload, f, indent=2, default=str)
+    with open(output_dir / f"{base}_features.json", "w") as f:
+        json.dump(features_payload, f, indent=2, default=str)
+
+
+def _make_output_dir(output_path: Path, result) -> Path:
+    base_dir = output_path.parent
+    start = result.start.strftime("%Y-%m-%d")
+    end = result.end.strftime("%Y-%m-%d")
+    folder = f"{start}_to_{end}"
+    return base_dir / folder
 
 
 if __name__ == "__main__":

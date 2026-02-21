@@ -48,7 +48,23 @@
     "high_vol_atr_z": 1.5,
     "confidence_threshold": 0.55,
     "bb_width_range_min": 0.01,
-    "bb_width_range_max": 0.05
+    "bb_width_range_max": 0.05,
+    "chop": {
+      "er_lookback": 20,
+      "er_max": 0.25,
+      "flip_lookback": 20,
+      "flip_rate_min": 0.55,
+      "ema1h_spread_max": 0.001,
+      "bb_width_percentile_lookback": 100,
+      "bb_width_percentile_max": 0.2,
+      "bb_width_chop_max": 0.02,
+      "score_threshold": 3,
+      "range_requires_extremes": true,
+      "regime_persistence_bars": 2,
+      "regime_switch_cooldown_bars": 3
+    },
+    "adaptive_regime": false,
+    "adaptive_adx_window": 8640
   },
   "strategies": {
     "trend_pullback": {
@@ -112,6 +128,6 @@
     "log_dir": "./logs",
     "trade_log_file": "trades.jsonl",
     "event_log_file": "events.jsonl",
-    "log_level": "INFO"
+    "log_level": "WARNING"
   }
 }

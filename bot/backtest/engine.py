@@ -38,6 +38,7 @@ from bot.strategies.base import FeatureSet, Strategy
 from bot.strategies.range_mean_reversion import RangeMeanReversionStrategy
 from bot.strategies.trend_breakout import TrendBreakoutStrategy
 from bot.strategies.trend_pullback import TrendPullbackStrategy
+from bot.utils.jsonl_logger import JsonlLogger
 
 logger = logging.getLogger("trading_bot.backtest.engine")
 
@@ -76,8 +77,10 @@ class BacktestResult:
     total_signals: int
     total_entries: int
     rejected_risk: int
+    rejected_spread: int
     features_at_entry: Dict[str, dict] = field(default_factory=dict)
     data_quality: Dict[str, dict] = field(default_factory=dict)
+    regime_bar_counts: Dict[str, int] = field(default_factory=dict)
 
 
 class BacktestEngine:
@@ -104,7 +107,11 @@ class BacktestEngine:
 
         # Build production components
         self._store = CandleStore(custom_limits=_BT_STORE_LIMITS)
-        self._feature_engine = FeatureEngine(self._store, config.timeframes)
+        self._feature_engine = FeatureEngine(
+            self._store,
+            config.timeframes,
+            config.regime,
+        )
         self._regime_detector = RegimeDetector(config.regime)
 
         # Risk stack
@@ -149,6 +156,9 @@ class BacktestEngine:
             f"equity={initial_equity:,.0f} USD, "
             f"strategies={[type(s).__name__ for s in self._strategies]}"
         )
+        log_dir = config.logging.log_dir
+        self._regime_log = JsonlLogger(f"{log_dir.rstrip('/')}/regime_decisions.jsonl")
+        self._strategy_log = JsonlLogger(f"{log_dir.rstrip('/')}/strategy_selection.jsonl")
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -211,7 +221,11 @@ class BacktestEngine:
         # The replay store is a fresh rolling-window store fed bar-by-bar.
         # 1h and 4h candles are pre-sorted for fast chronological feeding.
         replay_store = CandleStore(custom_limits=_BT_STORE_LIMITS)
-        feature_engine = FeatureEngine(replay_store, self._config.timeframes)
+        feature_engine = FeatureEngine(
+            replay_store,
+            self._config.timeframes,
+            self._config.regime,
+        )
 
         # Pre-load 1h and 4h candles from the full fetch_store
         tf1h_candles: Dict[str, List[Candle]] = {}
@@ -228,7 +242,9 @@ class BacktestEngine:
         total_signals = 0
         total_entries = 0
         rejected_risk = 0
+        rejected_spread = 0
         features_at_entry: Dict[str, dict] = {}
+        regime_bar_counts: Dict[str, int] = {}
 
         # Track which 1h/4h candles have been loaded up to the current 5m bar
         tf1h_idx: Dict[str, int] = {s: 0 for s in symbols}
@@ -236,7 +252,13 @@ class BacktestEngine:
 
         prev_ts_ms = 0
 
-        for bar_ts, symbol, candle_5m in all_5m_candles:
+        last_progress = -1
+        for i, (bar_ts, symbol, candle_5m) in enumerate(all_5m_candles, start=1):
+            if total_bars > 0:
+                progress = int((i / total_bars) * 100)
+                if progress != last_progress and progress % 5 == 0:
+                    print(f"[BACKTEST] {progress}% ({i}/{total_bars})")
+                    last_progress = progress
             now = datetime.fromtimestamp(bar_ts / 1000, tz=timezone.utc)
 
             # Day/week rollover for account PnL tracking
@@ -291,6 +313,54 @@ class BacktestEngine:
                 ema50_5m=raw_features.get("ema50_5m", current_price),
                 ema20_1h=raw_features.get("ema20_1h", current_price),
                 ema50_1h=raw_features.get("ema50_1h", current_price),
+                kaufman_er=raw_features.get("kaufman_er"),
+                flip_rate=raw_features.get("flip_rate"),
+                ema1h_spread_pct=raw_features.get("ema1h_spread_pct"),
+                bb_width_pct_rank=raw_features.get("bb_width_pct_rank"),
+                rsi_5m=raw_features.get("rsi14"),
+                bb_upper=raw_features.get("bb_upper"),
+                bb_lower=raw_features.get("bb_lower"),
+                last_close_5m=current_price,
+                rsi_extreme_low=self._config.strategies.range_mean_reversion.rsi_long_extreme,
+                rsi_extreme_high=self._config.strategies.range_mean_reversion.rsi_short_extreme,
+            )
+
+            # ── Regime decision log (per bar) ────────────────────────
+            spread_pct = 0.0  # Backtest uses no order book; spread gate is a no-op here
+            spread_ok = True
+            regime_bar_counts[regime_result.regime.value] = (
+                regime_bar_counts.get(regime_result.regime.value, 0) + 1
+            )
+            self._regime_log.log(
+                {
+                    "ts": bar_ts,
+                    "symbol": symbol,
+                    "regime": regime_result.regime.value,
+                    "confidence": regime_result.confidence,
+                    "inputs": {
+                        "adx_5m": raw_features.get("adx14"),
+                        "atr_z_5m": raw_features.get("atr_z"),
+                        "bb_width_5m": raw_features.get("bb_width"),
+                        "rsi_5m": raw_features.get("rsi14"),
+                        "ema20_1h": raw_features.get("ema20_1h"),
+                        "ema50_1h": raw_features.get("ema50_1h"),
+                        "trend_direction": regime_result.trend_direction or "flat",
+                    },
+                    "microstructure": {
+                        "spread_pct": spread_pct,
+                        "funding_rate": 0.0,
+                        "spread_ok": spread_ok,
+                        "funding_ok": True,
+                    },
+                    "scores": {
+                        "trend_score": regime_result.trend_score,
+                        "range_score": regime_result.range_score,
+                        "high_vol_score": regime_result.high_vol_score,
+                        "chop_score": regime_result.chop_score,
+                    },
+                    "reasons": regime_result.reasons,
+                },
+                ts=now,
             )
 
             if regime_result.regime == RegimeType.CHOP_NO_TRADE:
@@ -304,9 +374,31 @@ class BacktestEngine:
                 self._update_trailing_stops(symbol, candle_5m, raw_features)
                 continue
 
+            # ── Entry-time spread gate ──────────────────────────────
+            if not spread_ok:
+                rejected_spread += 1
+                self._strategy_log.log(
+                    {
+                        "ts": bar_ts,
+                        "symbol": symbol,
+                        "regime": regime_result.regime.value,
+                        "candidates": [type(s).__name__ for s in self._strategies],
+                        "rejected": [{"name": "ALL", "reason": "spread_gate"}],
+                        "selected": None,
+                        "reason": "SPREAD_GATE",
+                    },
+                    ts=now,
+                )
+                continue
+
+            strategy_evaluations = []
             for strategy in self._strategies:
                 # Check regime compatibility
                 if regime_result.regime not in strategy.compatible_regimes:
+                    strategy_evaluations.append({
+                        "name": type(strategy).__name__,
+                        "reason": "incompatible_regime",
+                    })
                     continue
 
                 signal = strategy.generate_signal(
@@ -318,6 +410,10 @@ class BacktestEngine:
                 )
 
                 if signal is None or not signal.entry:
+                    strategy_evaluations.append({
+                        "name": type(strategy).__name__,
+                        "reason": "no_signal",
+                    })
                     continue
 
                 total_signals += 1
@@ -351,11 +447,19 @@ class BacktestEngine:
                     logger.debug(
                         f"{symbol}: entry rejected — {risk_result.rejection_reason}"
                     )
+                    strategy_evaluations.append({
+                        "name": type(strategy).__name__,
+                        "reason": f"risk_reject:{risk_result.rejection_reason}",
+                    })
                     continue
 
                 ps = risk_result.position_size
                 if ps is None or not ps.approved:
                     rejected_risk += 1
+                    strategy_evaluations.append({
+                        "name": type(strategy).__name__,
+                        "reason": "position_sizing_reject",
+                    })
                     continue
 
                 # ── Open position ────────────────────────────────────
@@ -374,16 +478,30 @@ class BacktestEngine:
                     regime=regime_result.regime.value,
                     trail_after_r=signal.trail_after_r,
                     atr_trail_mult=signal.atr_trail_mult,
+                    regime_confidence=regime_result.confidence,
                 )
 
                 if pos is not None:
                     pos.trail_enabled = signal.trail_enabled
                     total_entries += 1
+                    self._strategy_log.log(
+                        {
+                            "ts": bar_ts,
+                            "symbol": symbol,
+                            "regime": regime_result.regime.value,
+                            "candidates": [type(s).__name__ for s in self._strategies],
+                            "rejected": strategy_evaluations,
+                            "selected": type(strategy).__name__,
+                            "reason": "selected",
+                        },
+                        ts=now,
+                    )
                     features_at_entry[pos.trade_id] = {
                         "symbol": symbol,
                         "timestamp": bar_ts,
                         "strategy": type(strategy).__name__,
                         "regime": regime_result.regime.value,
+                        "regime_confidence": regime_result.confidence,
                         "side": signal.side.value if signal.side else None,
                         "price": current_price,
                         "signal": {
@@ -406,6 +524,20 @@ class BacktestEngine:
                     )
                     # Only take first qualifying signal per bar
                     break
+            else:
+                if strategy_evaluations:
+                    self._strategy_log.log(
+                        {
+                            "ts": bar_ts,
+                            "symbol": symbol,
+                            "regime": regime_result.regime.value,
+                            "candidates": [type(s).__name__ for s in self._strategies],
+                            "rejected": strategy_evaluations,
+                            "selected": None,
+                            "reason": "no_strategy_selected",
+                        },
+                        ts=now,
+                    )
 
         # ── Step 5: Close all open positions at end of data ───────────
         last_ts = all_5m_candles[-1][0] if all_5m_candles else 0
@@ -431,8 +563,10 @@ class BacktestEngine:
             total_signals=total_signals,
             total_entries=total_entries,
             rejected_risk=rejected_risk,
+            rejected_spread=rejected_spread,
             features_at_entry=features_at_entry,
             data_quality=data_quality,
+            regime_bar_counts=regime_bar_counts,
         )
 
     # ── Internal helpers ────────────────────────────────────────────────
@@ -463,18 +597,19 @@ class BacktestEngine:
 
             # Effective stop: use trailing stop if active, else initial stop
             effective_stop = pos.trailing_stop if pos.trailing_stop is not None else pos.stop_price
+            stop_reason = "TRAIL" if pos.trailing_stop is not None else "SL"
 
             if pos.side == OrderSide.LONG:
                 # SL hit
                 if candle.low <= effective_stop:
-                    to_close.append((pos.trade_id, effective_stop, "SL"))
+                    to_close.append((pos.trade_id, effective_stop, stop_reason))
                 # TP hit
                 elif pos.tp_price is not None and candle.high >= pos.tp_price:
                     to_close.append((pos.trade_id, pos.tp_price, "TP"))
             else:  # SHORT
                 # SL hit
                 if candle.high >= effective_stop:
-                    to_close.append((pos.trade_id, effective_stop, "SL"))
+                    to_close.append((pos.trade_id, effective_stop, stop_reason))
                 # TP hit
                 elif pos.tp_price is not None and candle.low <= pos.tp_price:
                     to_close.append((pos.trade_id, pos.tp_price, "TP"))
@@ -485,7 +620,7 @@ class BacktestEngine:
                 exit_price_raw=exit_price,
                 exit_time=now,
                 exit_reason=reason,
-                is_market=(reason == "SL"),  # SL → market fill; TP → limit
+                is_market=(reason in ("SL", "TRAIL")),  # SL/TRAIL → market fill; TP → limit
             )
             if trade:
                 pnl_str = f"{trade.pnl_usd:+.2f} USD ({trade.pnl_r:+.2f}R)"
