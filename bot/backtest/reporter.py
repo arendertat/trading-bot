@@ -749,6 +749,7 @@ def _compute_reject_reason_distribution(
         "RISK_BLOCK",
         "COOLDOWN",
         "INSUFFICIENT_CONFIDENCE",
+        "INSUFFICIENT_MARGIN",
     ]
     return {k: int(counts.get(k, 0)) for k in keys}
 

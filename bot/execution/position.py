@@ -272,6 +272,7 @@ class Position:
             "quantity": self.quantity,
             "notional_usd": self.notional_usd,
             "leverage": self.leverage,
+            "leverage_used": self.leverage,
             "margin_usd": self.margin_usd,
             "stop_price": self.stop_price,
             "tp_price": self.tp_price,

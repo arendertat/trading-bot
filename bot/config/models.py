@@ -73,6 +73,14 @@ class RiskConfig(BaseModel):
     high_vol_risk_reduction_pct: float = Field(default=0.005, gt=0, le=0.1)  # 0.5%
     # SL'den sonra aynı sembolde kaç 5m bar bekle (0 = devre dışı)
     cooldown_after_sl_bars: int = Field(default=0, ge=0, le=50)
+    # Margin-aware clamp (0-1)
+    available_margin_ratio: float = Field(default=0.9, ge=0.0, le=1.0)
+    max_margin_utilization: float = Field(default=0.85, ge=0.0, le=1.0)
+    # Min stop distance for ATR stops
+    min_stop_pct: float = Field(default=0.006, ge=0.0, le=0.2)
+    min_stop_usd: float = Field(default=150.0, ge=0.0, le=100000.0)
+    # Throttle insufficient margin logs
+    insufficient_margin_log_every_n: int = Field(default=20, ge=1, le=10000)
     # Portfolio Exposure Monitor (Özellik 9)
     # Net exposure = |long_notional - short_notional| / equity
     # Default 2.0 = disabled in practice (allows up to 2x equity net exposure)
@@ -187,6 +195,13 @@ class CostGateConfig(BaseModel):
     setup_quality_weights: SetupQualityWeights = Field(default_factory=SetupQualityWeights)
 
 
+class GatesConfig(BaseModel):
+    """Trade gate toggles and thresholds"""
+    cost_gate_enabled: bool = True
+    min_net_edge_r: float = Field(default=0.0, ge=0.0, le=10.0)
+    min_edge_over_cost_mult: float = Field(default=2.0, ge=0.1, le=10.0)
+
+
 class TimeFilterConfig(BaseModel):
     """Time-based filters and diagnostics"""
     bad_hours: List[int] = Field(default_factory=list)
@@ -226,6 +241,7 @@ class StrategyTrendPullbackConfig(BaseModel):
     atr_trail_mult: float = Field(default=2.0, ge=0.5, le=10.0)
     # ATR-based dynamic stop (Özellik 5)
     dynamic_stop_enabled: bool = False
+    stop_atr_lookback: int = Field(default=14, ge=5, le=100)
     stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
     stop_atr_multiplier_by_regime: StopAtrMultiplierByRegime = Field(
         default_factory=StopAtrMultiplierByRegime
@@ -245,6 +261,7 @@ class StrategyTrendBreakoutConfig(BaseModel):
     atr_trail_mult: float = Field(default=2.5, ge=0.5, le=10.0)
     # ATR-based dynamic stop (Özellik 5)
     dynamic_stop_enabled: bool = False
+    stop_atr_lookback: int = Field(default=14, ge=5, le=100)
     stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
     stop_atr_multiplier_by_regime: StopAtrMultiplierByRegime = Field(
         default_factory=StopAtrMultiplierByRegime
@@ -264,6 +281,7 @@ class StrategyRangeMeanReversionConfig(BaseModel):
     rsi_short_extreme: float = Field(default=75, ge=50, le=100)
     # ATR-based dynamic stop (Özellik 5)
     dynamic_stop_enabled: bool = False
+    stop_atr_lookback: int = Field(default=14, ge=5, le=100)
     stop_atr_multiplier: float = Field(default=1.5, ge=0.5, le=5.0)
     stop_atr_multiplier_by_regime: StopAtrMultiplierByRegime = Field(
         default_factory=StopAtrMultiplierByRegime
@@ -360,6 +378,7 @@ class BotConfig(BaseModel):
     regime: RegimeConfig
     strategies: StrategiesConfig
     cost_gate: CostGateConfig = Field(default_factory=CostGateConfig)
+    gates: GatesConfig = Field(default_factory=GatesConfig)
     time_filters: TimeFilterConfig = Field(default_factory=TimeFilterConfig)
     leverage: LeverageConfig
     execution: ExecutionConfig
@@ -421,6 +440,13 @@ class BotConfig(BaseModel):
             raise ValueError("cost_gate.rsi_ideal_min must be < rsi_ideal_max")
         if cg.bb_width_min >= cg.bb_width_max:
             raise ValueError("cost_gate.bb_width_min must be < bb_width_max")
+
+        # Validate gates config
+        gates = self.gates
+        if gates.min_net_edge_r < 0:
+            raise ValueError("gates.min_net_edge_r must be >= 0")
+        if gates.min_edge_over_cost_mult <= 0:
+            raise ValueError("gates.min_edge_over_cost_mult must be > 0")
 
         # Validate RSI ranges for trend pullback
         tp = self.strategies.trend_pullback

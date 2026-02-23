@@ -71,7 +71,7 @@ from bot.strategies.trend_breakout import TrendBreakoutStrategy
 from bot.strategies.range_mean_reversion import RangeMeanReversionStrategy
 from bot.universe.selector import UniverseSelector
 from bot.utils.logger import setup_logging
-from bot.utils.edge import compute_setup_quality, estimate_cost_gate
+from bot.utils.edge import compute_setup_quality, estimate_cost_gate, passes_cost_gate
 
 
 logger = logging.getLogger("trading_bot.runner")
@@ -118,6 +118,7 @@ class BotRunner:
             self._candle_store,
             config.timeframes,
             config.regime,
+            config.strategies,
         )
 
         # ── WebSocket / REST kline feed (Özellik 2) ───────────────────
@@ -140,15 +141,21 @@ class BotRunner:
         self._regime_detector = RegimeDetector(config.regime)
 
         # ── Strategies ────────────────────────────────────────────────
+        def _with_risk_defaults(cfg: dict) -> dict:
+            cfg = dict(cfg)
+            cfg.setdefault("min_stop_pct", config.risk.min_stop_pct)
+            cfg.setdefault("min_stop_usd", config.risk.min_stop_usd)
+            return cfg
+
         self._strategies: Dict[str, Strategy] = {
             "TrendPullback": TrendPullbackStrategy(
-                config.strategies.trend_pullback.model_dump()
+                _with_risk_defaults(config.strategies.trend_pullback.model_dump())
             ),
             "TrendBreakout": TrendBreakoutStrategy(
-                config.strategies.trend_breakout.model_dump()
+                _with_risk_defaults(config.strategies.trend_breakout.model_dump())
             ),
             "RangeMeanReversion": RangeMeanReversionStrategy(
-                config.strategies.range_mean_reversion.model_dump()
+                _with_risk_defaults(config.strategies.range_mean_reversion.model_dump())
             ),
         }
 
@@ -595,6 +602,7 @@ class BotRunner:
                 ema20_1h=features_dict["ema20_1h"],
                 ema50_1h=features_dict["ema50_1h"],
                 atr_5m=features_dict["atr14"],
+                atr_by_lookback=features_dict.get("atr_by_lookback"),
                 bb_upper_5m=features_dict.get("bb_upper") or 0.0,
                 bb_lower_5m=features_dict.get("bb_lower") or 0.0,
                 bb_middle_5m=features_dict.get("bb_middle") or 0.0,
@@ -734,11 +742,12 @@ class BotRunner:
             config=self.config.cost_gate,
             setup_quality_score=setup_quality,
         )
-        if cost_gate.expected_edge_r < (self.config.cost_gate.min_edge_over_cost_mult * cost_gate.estimated_cost_r):
+        if not passes_cost_gate(cost_gate, self.config.gates):
             logger.info(
-                f"{symbol}: COST_GATE reject (edge={cost_gate.expected_edge_r:.3f}R "
-                f"< {self.config.cost_gate.min_edge_over_cost_mult:.2f}x cost "
-                f"{cost_gate.estimated_cost_r:.3f}R)"
+                f"{symbol}: COST_GATE reject (edge={cost_gate.expected_edge_r:.3f}R, "
+                f"cost={cost_gate.estimated_cost_r:.3f}R, "
+                f"min_net={self.config.gates.min_net_edge_r:.3f}R, "
+                f"min_mult={self.config.gates.min_edge_over_cost_mult:.2f}x)"
             )
             return
 

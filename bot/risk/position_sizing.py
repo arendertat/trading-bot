@@ -58,6 +58,7 @@ class PositionSizingCalculator:
         regime: RegimeType,
         current_price: float,
         free_margin_usd: float,
+        symbol: Optional[str] = None,
         min_notional_usd: float = 5.0,
         risk_per_trade_pct: Optional[float] = None,
     ) -> PositionSizeResult:
@@ -106,10 +107,21 @@ class PositionSizingCalculator:
         notional_usd = risk_usd / stop_pct
 
         # Step 3: Get leverage for regime
-        leverage = self.regime_leverage_map.get(regime, 1.0)
+        leverage = self.get_effective_leverage(symbol, regime)
 
-        # Step 4: Calculate margin required
+        # Step 4: Margin-aware clamp
+        available_margin = min(
+            free_margin_usd,
+            equity_usd * self.risk_config.available_margin_ratio,
+        )
+        max_util = self.risk_config.max_margin_utilization
         margin_required_usd = notional_usd / leverage
+        clamped = False
+        if max_util > 0 and margin_required_usd > (available_margin * max_util):
+            notional_usd = available_margin * max_util * leverage
+            margin_required_usd = notional_usd / leverage
+            risk_usd = notional_usd * stop_pct
+            clamped = True
 
         # Step 5: Calculate quantity
         if current_price <= 0:
@@ -128,8 +140,10 @@ class PositionSizingCalculator:
 
         # Validation 1: Check minimum notional
         if notional_usd < min_notional_usd:
-            logger.debug(
-                f"Position rejected: notional ${notional_usd:.2f} < minimum ${min_notional_usd:.2f}"
+            reason = (
+                "INSUFFICIENT_MARGIN: notional below minimum after clamp"
+                if clamped
+                else f"Notional ${notional_usd:.2f} below minimum ${min_notional_usd:.2f}"
             )
             return PositionSizeResult(
                 notional_usd=notional_usd,
@@ -138,15 +152,11 @@ class PositionSizingCalculator:
                 risk_usd=risk_usd,
                 quantity=quantity,
                 approved=False,
-                rejection_reason=f"Notional ${notional_usd:.2f} below minimum ${min_notional_usd:.2f}",
+                rejection_reason=reason,
             )
 
         # Validation 2: Check sufficient margin
         if margin_required_usd > free_margin_usd:
-            logger.warning(
-                f"Insufficient margin: required ${margin_required_usd:.2f}, "
-                f"available ${free_margin_usd:.2f}"
-            )
             return PositionSizeResult(
                 notional_usd=notional_usd,
                 leverage=leverage,
@@ -199,6 +209,16 @@ class PositionSizingCalculator:
             Leverage multiplier
         """
         return self.regime_leverage_map.get(regime, 1.0)
+
+    def get_effective_leverage(self, symbol: Optional[str], regime: RegimeType) -> float:
+        """
+        Get leverage used for sizing (shared by backtest/live).
+
+        Symbol is accepted for future exchange-specific leverage, but current
+        implementation is regime-based only.
+        """
+        _ = symbol
+        return self.get_leverage_for_regime(regime)
 
     def calculate_max_position_count(
         self,

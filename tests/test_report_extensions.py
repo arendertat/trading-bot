@@ -17,6 +17,7 @@ def test_report_extensions_present():
         exit_price=101.0,
         quantity=1.0,
         notional_usd=100.0,
+        leverage_used=1.0,
         entry_time=now,
         exit_time=now,
         exit_reason="TP",

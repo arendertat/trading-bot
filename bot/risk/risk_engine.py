@@ -62,6 +62,8 @@ class RiskEngine:
 
         # Özellik 10: Cooldown tracking — symbol → bars remaining
         self._cooldown_bars: dict = {}
+        # Throttle insufficient margin logs — symbol -> count
+        self._insufficient_margin_counts: dict = {}
 
         logger.info("RiskEngine initialized with all risk components")
 
@@ -190,11 +192,22 @@ class RiskEngine:
             regime=regime,
             current_price=current_price,
             free_margin_usd=free_margin_usd,
+            symbol=symbol,
             risk_per_trade_pct=effective_risk_pct,
         )
 
         if not position_size.approved:
-            logger.warning(f"Position sizing failed: {position_size.rejection_reason}")
+            if "Insufficient margin" in position_size.rejection_reason or "INSUFFICIENT_MARGIN" in position_size.rejection_reason:
+                count = self._insufficient_margin_counts.get(symbol, 0) + 1
+                self._insufficient_margin_counts[symbol] = count
+                every_n = self.config.risk.insufficient_margin_log_every_n
+                if every_n > 0 and (count == 1 or count % every_n == 0):
+                    logger.warning(
+                        f"Position sizing failed: {position_size.rejection_reason} "
+                        f"(count={count})"
+                    )
+            else:
+                logger.warning(f"Position sizing failed: {position_size.rejection_reason}")
             return RiskValidationResult(
                 approved=False,
                 rejection_reason=position_size.rejection_reason,

@@ -37,6 +37,11 @@ def default_config():
             max_total_open_risk_pct=0.025,  # 2.5%
             max_open_positions=2,
             max_same_direction_positions=2,
+            available_margin_ratio=1.0,
+            max_margin_utilization=1.0,
+            min_stop_pct=0.0,
+            min_stop_usd=0.0,
+            insufficient_margin_log_every_n=1000,
         ),
         regime=RegimeConfig(),
         strategies=StrategiesConfig(
@@ -198,6 +203,47 @@ class TestValidations:
             current_price=50000.0,
             free_margin_usd=10000.0,
         )
+        assert result.approved is False
+        assert "Invalid stop_pct" in result.rejection_reason
+
+
+class TestMarginClamp:
+    """Tests for margin-aware clamp behavior."""
+
+    def test_margin_clamp_reduces_notional(self, default_config):
+        default_config.risk.available_margin_ratio = 1.0
+        default_config.risk.max_margin_utilization = 0.5
+        calculator = PositionSizingCalculator(default_config)
+
+        result = calculator.calculate(
+            equity_usd=10000.0,
+            stop_pct=0.005,  # 0.5% stop -> big notional
+            regime=RegimeType.TREND,
+            current_price=50000.0,
+            free_margin_usd=10000.0,
+        )
+
+        # Clamp notional to available_margin * max_util * leverage
+        assert result.approved is True
+        assert result.notional_usd == pytest.approx(10000.0)
+        assert result.margin_required_usd == pytest.approx(5000.0)
+
+    def test_margin_clamp_below_min_notional_rejects(self, default_config):
+        default_config.risk.available_margin_ratio = 0.1
+        default_config.risk.max_margin_utilization = 0.5
+        calculator = PositionSizingCalculator(default_config)
+
+        result = calculator.calculate(
+            equity_usd=10000.0,
+            stop_pct=0.01,
+            regime=RegimeType.RANGE,
+            current_price=20000.0,
+            free_margin_usd=10000.0,
+            min_notional_usd=1000.0,
+        )
+
+        assert result.approved is False
+        assert "INSUFFICIENT_MARGIN" in result.rejection_reason
 
         assert result.approved is False
         assert "Invalid stop_pct" in result.rejection_reason

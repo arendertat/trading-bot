@@ -50,6 +50,9 @@ class FeatureSet:
     # bid_volume / ask_volume — >1 bullish pressure, <1 bearish pressure
     book_imbalance_ratio: Optional[float] = None
 
+    # ATR values by lookback for dynamic stops
+    atr_by_lookback: Optional[dict[int, float]] = None
+
 
 @dataclass
 class StrategySignal:
@@ -141,7 +144,7 @@ class Strategy(ABC):
         Calculate stop loss price.
 
         If dynamic_stop_enabled=True in config, uses ATR-based distance:
-            stop_distance = ATR(14) * stop_atr_multiplier
+            stop_distance = ATR(lookback) * stop_atr_multiplier
         Otherwise falls back to fixed percentage stop_pct.
 
         ATR-based stop adapts to volatility: tight in low-vol, wider in high-vol.
@@ -158,6 +161,15 @@ class Strategy(ABC):
                 elif regime_name == "HIGH_VOL":
                     multiplier = multipliers.get("high_vol", multiplier)
             stop_distance = atr * multiplier
+            min_stop_pct = self.config.get("min_stop_pct", 0.0) or 0.0
+            min_stop_usd = self.config.get("min_stop_usd", 0.0) or 0.0
+            min_distance = 0.0
+            if min_stop_pct > 0:
+                min_distance = max(min_distance, entry_price * min_stop_pct)
+            if min_stop_usd > 0:
+                min_distance = max(min_distance, min_stop_usd)
+            if min_distance > 0:
+                stop_distance = max(stop_distance, min_distance)
             if side == OrderSide.LONG:
                 return entry_price - stop_distance
             return entry_price + stop_distance
@@ -253,7 +265,11 @@ class Strategy(ABC):
             return None
 
         # Calculate stop/TP
-        stop_price = self.calculate_stop_loss(current_price, side, features.atr_5m, regime_result)
+        atr_value = features.atr_5m
+        atr_lookback = self.config.get("stop_atr_lookback")
+        if atr_lookback and features.atr_by_lookback:
+            atr_value = features.atr_by_lookback.get(atr_lookback, atr_value)
+        stop_price = self.calculate_stop_loss(current_price, side, atr_value, regime_result)
         tp_price = self.calculate_take_profit(current_price, stop_price, side)
 
         # Calculate stop distance percentage

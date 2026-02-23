@@ -34,3 +34,18 @@ def test_dynamic_stop_regime_multiplier():
     atr = 2.0
     stop = strategy.calculate_stop_loss(entry, OrderSide.LONG, atr, regime)
     assert abs(stop - (entry - 4.0)) < 1e-6
+
+
+def test_dynamic_stop_min_distance_clamp():
+    config = {
+        "enabled": True,
+        "dynamic_stop_enabled": True,
+        "stop_atr_multiplier": 1.0,
+        "min_stop_pct": 0.005,
+        "min_stop_usd": 0.0,
+    }
+    strategy = TrendPullbackStrategy(config)
+    entry = 100.0
+    atr = 0.01
+    stop = strategy.calculate_stop_loss(entry, OrderSide.LONG, atr, None)
+    assert abs(stop - 99.5) < 1e-6

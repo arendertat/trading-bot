@@ -6,7 +6,7 @@ import pandas as pd
 
 from bot.data.candle_store import CandleStore
 from bot.data import features
-from bot.config.models import TimeframesConfig, RegimeConfig
+from bot.config.models import TimeframesConfig, RegimeConfig, StrategiesConfig
 
 
 logger = logging.getLogger("trading_bot.data")
@@ -24,6 +24,7 @@ class FeatureEngine:
         candle_store: CandleStore,
         timeframes_config: TimeframesConfig,
         regime_config: Optional[RegimeConfig] = None,
+        strategies_config: Optional[StrategiesConfig] = None,
     ):
         """
         Initialize FeatureEngine.
@@ -35,6 +36,7 @@ class FeatureEngine:
         self.candle_store = candle_store
         self.config = timeframes_config
         self.regime_config = regime_config
+        self.strategies_config = strategies_config
 
         logger.info("FeatureEngine initialized")
 
@@ -69,6 +71,18 @@ class FeatureEngine:
             50,  # EMA50
             self.config.zscore_lookback
         )
+        atr_lookbacks = {14}
+        if self.strategies_config is not None:
+            try:
+                atr_lookbacks.update([
+                    self.strategies_config.trend_pullback.stop_atr_lookback,
+                    self.strategies_config.trend_breakout.stop_atr_lookback,
+                    self.strategies_config.range_mean_reversion.stop_atr_lookback,
+                ])
+            except Exception:
+                pass
+        if atr_lookbacks:
+            min_bars_5m = max(min_bars_5m, max(atr_lookbacks) + 1)
         trend_cfg = None
         if self.regime_config is not None:
             chop_cfg = self.regime_config.chop
@@ -114,7 +128,11 @@ class FeatureEngine:
         # Compute indicators (5m)
         rsi_series = features.rsi(df_5m['close'], period=14)
         adx_series = features.adx(df_5m['high'], df_5m['low'], df_5m['close'], period=14)
-        atr_series = features.atr(df_5m['high'], df_5m['low'], df_5m['close'], period=14)
+        atr_series_by_lb = {
+            lb: features.atr(df_5m['high'], df_5m['low'], df_5m['close'], period=lb)
+            for lb in sorted(atr_lookbacks)
+        }
+        atr_series = atr_series_by_lb.get(14)
         ema20_5m_series = features.ema(df_5m['close'], period=20)
         ema50_5m_series = features.ema(df_5m['close'], period=50)
 
@@ -181,6 +199,13 @@ class FeatureEngine:
 
         # Extract latest values
         try:
+            atr_by_lookback = {}
+            for lb, series in atr_series_by_lb.items():
+                try:
+                    atr_by_lookback[int(lb)] = float(series.iloc[-1]) if series is not None else None
+                except (IndexError, TypeError, ValueError):
+                    atr_by_lookback[int(lb)] = None
+
             last_close_1h = float(df_1h['close'].iloc[-1])
             ema20_1h_val = float(ema20_1h_series.iloc[-1]) if ema20_1h_series is not None else None
             ema50_1h_val = float(ema50_1h_series.iloc[-1]) if ema50_1h_series is not None else None
@@ -198,6 +223,7 @@ class FeatureEngine:
                 "rsi14": float(rsi_series.iloc[-1]) if rsi_series is not None else None,
                 "adx14": float(adx_series.iloc[-1]) if adx_series is not None else None,
                 "atr14": float(atr_series.iloc[-1]) if atr_series is not None else None,
+                "atr_by_lookback": atr_by_lookback,
                 "ema20_5m": float(ema20_5m_series.iloc[-1]) if ema20_5m_series is not None else None,
                 "ema50_5m": float(ema50_5m_series.iloc[-1]) if ema50_5m_series is not None else None,
                 "ema20_1h": ema20_1h_val,
@@ -231,6 +257,7 @@ class FeatureEngine:
                 "ema20_4h", "ema50_4h", "book_imbalance_ratio",
                 "kaufman_er", "flip_rate", "choppiness", "adx_momentum",
                 "ema20_1h_slope", "ema1h_spread_pct", "bb_width_pct_rank",
+                "atr_by_lookback",
             }
             core_snapshot = {k: v for k, v in snapshot.items() if k not in optional_keys}
             if any(v is None for v in core_snapshot.values()):

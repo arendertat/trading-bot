@@ -45,6 +45,11 @@
     "reduced_risk_days": 3,
     "high_vol_risk_reduction_pct": 0.005,
     "cooldown_after_sl_bars": 0,
+    "available_margin_ratio": 0.9,
+    "max_margin_utilization": 0.85,
+    "min_stop_pct": 0.006,
+    "min_stop_usd": 150,
+    "insufficient_margin_log_every_n": 20,
     "max_net_exposure_pct": 2.0,
     "max_single_symbol_exposure_pct": 1.0
   },
@@ -108,6 +113,7 @@
       "trail_after_r": 1.0,
       "atr_trail_mult": 2.0,
       "dynamic_stop_enabled": false,
+      "stop_atr_lookback": 14,
       "stop_atr_multiplier": 1.5,
       "stop_atr_multiplier_by_regime": {
         "trend": 1.5,
@@ -125,6 +131,7 @@
       "breakout_volume_z_min": 1.0,
       "atr_trail_mult": 2.5,
       "dynamic_stop_enabled": false,
+      "stop_atr_lookback": 14,
       "stop_atr_multiplier": 1.5,
       "stop_atr_multiplier_by_regime": {
         "trend": 1.5,
@@ -142,6 +149,7 @@
       "rsi_long_extreme": 25,
       "rsi_short_extreme": 75,
       "dynamic_stop_enabled": false,
+      "stop_atr_lookback": 14,
       "stop_atr_multiplier": 1.5,
       "stop_atr_multiplier_by_regime": {
         "trend": 1.5,
@@ -149,6 +157,12 @@
         "high_vol": 2.2
       }
     }
+  },
+
+  "gates": {
+    "cost_gate_enabled": true,
+    "min_net_edge_r": 0.0,
+    "min_edge_over_cost_mult": 2.0
   },
 
   "cost_gate": {

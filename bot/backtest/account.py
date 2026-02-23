@@ -27,6 +27,7 @@ class BacktestTrade:
     exit_price: float
     quantity: float
     notional_usd: float
+    leverage_used: float
     entry_time: datetime
     exit_time: datetime
     exit_reason: str           # "SL", "TP", "TRAIL", "EOD" (end of data)
@@ -67,6 +68,7 @@ class OpenBacktestPosition:
     quantity: float
     notional_usd: float
     risk_usd: float
+    leverage_used: float
     stop_price: float
     tp_price: Optional[float]
     entry_time: datetime
@@ -212,6 +214,7 @@ class BacktestAccount:
         notional_usd: float,
         margin_usd: float,       # actual margin to block (notional / leverage)
         risk_usd: float,
+        leverage_used: float,
         stop_price: float,
         tp_price: Optional[float],
         entry_time: datetime,
@@ -253,6 +256,7 @@ class BacktestAccount:
             notional_usd=notional_usd,
             margin_usd=margin_usd,
             risk_usd=risk_usd,
+            leverage_used=leverage_used,
             stop_price=stop_price,
             tp_price=tp_price,
             entry_time=entry_time,
@@ -335,6 +339,7 @@ class BacktestAccount:
             exit_price=fill_price,
             quantity=pos.quantity,
             notional_usd=pos.notional_usd,
+            leverage_used=pos.leverage_used,
             entry_time=pos.entry_time,
             exit_time=exit_time,
             exit_reason=exit_reason,

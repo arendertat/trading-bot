@@ -39,7 +39,7 @@ from bot.strategies.range_mean_reversion import RangeMeanReversionStrategy
 from bot.strategies.trend_breakout import TrendBreakoutStrategy
 from bot.strategies.trend_pullback import TrendPullbackStrategy
 from bot.utils.jsonl_logger import JsonlLogger
-from bot.utils.edge import compute_setup_quality, estimate_cost_gate
+from bot.utils.edge import compute_setup_quality, estimate_cost_gate, passes_cost_gate
 
 logger = logging.getLogger("trading_bot.backtest.engine")
 
@@ -115,6 +115,7 @@ class BacktestEngine:
             self._store,
             config.timeframes,
             config.regime,
+            config.strategies,
         )
         self._regime_detector = RegimeDetector(config.regime)
 
@@ -133,18 +134,24 @@ class BacktestEngine:
 
         # Strategies
         strat_cfg = config.strategies
+        def _with_risk_defaults(cfg: dict) -> dict:
+            cfg = dict(cfg)
+            cfg.setdefault("min_stop_pct", config.risk.min_stop_pct)
+            cfg.setdefault("min_stop_usd", config.risk.min_stop_usd)
+            return cfg
+
         self._strategies: List[Strategy] = []
         if strat_cfg.trend_pullback.enabled:
             self._strategies.append(
-                TrendPullbackStrategy(strat_cfg.trend_pullback.model_dump())
+                TrendPullbackStrategy(_with_risk_defaults(strat_cfg.trend_pullback.model_dump()))
             )
         if strat_cfg.trend_breakout.enabled:
             self._strategies.append(
-                TrendBreakoutStrategy(strat_cfg.trend_breakout.model_dump())
+                TrendBreakoutStrategy(_with_risk_defaults(strat_cfg.trend_breakout.model_dump()))
             )
         if strat_cfg.range_mean_reversion.enabled:
             self._strategies.append(
-                RangeMeanReversionStrategy(strat_cfg.range_mean_reversion.model_dump())
+                RangeMeanReversionStrategy(_with_risk_defaults(strat_cfg.range_mean_reversion.model_dump()))
             )
 
         # Simulated account
@@ -229,6 +236,7 @@ class BacktestEngine:
             replay_store,
             self._config.timeframes,
             self._config.regime,
+            self._config.strategies,
         )
 
         # Pre-load 1h and 4h candles from the full fetch_store
@@ -254,6 +262,7 @@ class BacktestEngine:
             "RISK_BLOCK": 0,
             "COOLDOWN": 0,
             "INSUFFICIENT_CONFIDENCE": 0,
+            "INSUFFICIENT_MARGIN": 0,
         }
         features_at_entry: Dict[str, dict] = {}
         regime_bar_counts: Dict[str, int] = {}
@@ -298,6 +307,7 @@ class BacktestEngine:
             # Snapshot equity once per unique timestamp
             if bar_ts != prev_ts_ms:
                 self._account.snapshot_equity(bar_ts)
+                self._risk_engine.tick_cooldowns()
                 prev_ts_ms = bar_ts
 
             current_price = candle_5m.close
@@ -471,7 +481,12 @@ class BacktestEngine:
 
                 if not risk_result.approved:
                     rejected_risk += 1
-                    reject_reason_counts["RISK_BLOCK"] += 1
+                    if "Cooldown active" in risk_result.rejection_reason:
+                        reject_reason_counts["COOLDOWN"] += 1
+                    elif "Insufficient margin" in risk_result.rejection_reason or "INSUFFICIENT_MARGIN" in risk_result.rejection_reason:
+                        reject_reason_counts["INSUFFICIENT_MARGIN"] += 1
+                    else:
+                        reject_reason_counts["RISK_BLOCK"] += 1
                     logger.debug(
                         f"{symbol}: entry rejected — {risk_result.rejection_reason}"
                     )
@@ -499,7 +514,7 @@ class BacktestEngine:
                     config=self._config.cost_gate,
                     setup_quality_score=setup_quality,
                 )
-                if cost_gate.expected_edge_r < (self._config.cost_gate.min_edge_over_cost_mult * cost_gate.estimated_cost_r):
+                if not passes_cost_gate(cost_gate, self._config.gates):
                     reject_reason_counts["COST_GATE"] += 1
                     strategy_evaluations.append({
                         "name": type(strategy).__name__,
@@ -516,6 +531,7 @@ class BacktestEngine:
                     notional_usd=ps.notional_usd,
                     margin_usd=ps.margin_required_usd,
                     risk_usd=ps.risk_usd,
+                    leverage_used=ps.leverage,
                     stop_price=signal.stop_price,
                     tp_price=signal.tp_price,
                     entry_time=now,
@@ -681,6 +697,8 @@ class BacktestEngine:
                 is_market=(reason in ("SL", "TRAIL")),  # SL/TRAIL → market fill; TP → limit
             )
             if trade:
+                if reason in ("SL", "TRAIL"):
+                    self._risk_engine.record_sl_exit(trade.symbol)
                 pnl_str = f"{trade.pnl_usd:+.2f} USD ({trade.pnl_r:+.2f}R)"
                 logger.debug(
                     f"{symbol}: CLOSE {reason} {trade.side} @ {exit_price:.4f} {pnl_str}"
@@ -734,6 +752,7 @@ def _build_feature_set(raw: dict, current_price: float) -> FeatureSet:
         ema20_1h=raw.get("ema20_1h", current_price),
         ema50_1h=raw.get("ema50_1h", current_price),
         atr_5m=raw.get("atr14", 0.0),
+        atr_by_lookback=raw.get("atr_by_lookback"),
         bb_upper_5m=raw.get("bb_upper", current_price * 1.02),
         bb_lower_5m=raw.get("bb_lower", current_price * 0.98),
         bb_middle_5m=raw.get("bb_middle", current_price),

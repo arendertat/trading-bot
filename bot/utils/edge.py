@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from bot.core.constants import OrderSide
-from bot.config.models import CostGateConfig
+from bot.config.models import CostGateConfig, GatesConfig
 from bot.strategies.base import FeatureSet
 
 
@@ -92,6 +92,23 @@ def estimate_cost_gate(
         estimated_cost_r=estimated_cost_r,
         setup_quality_score=setup_quality_score,
         expected_edge_r=expected_edge_r,
+    )
+
+
+def passes_cost_gate(cost_gate: CostGateResult, gates: GatesConfig) -> bool:
+    """Evaluate cost gate conditions."""
+    if not gates.cost_gate_enabled:
+        return True
+
+    net_edge = cost_gate.expected_edge_r - cost_gate.estimated_cost_r
+    if net_edge < gates.min_net_edge_r:
+        return False
+
+    if cost_gate.estimated_cost_r <= 0:
+        return True
+
+    return cost_gate.expected_edge_r >= (
+        gates.min_edge_over_cost_mult * cost_gate.estimated_cost_r
     )
 
 
