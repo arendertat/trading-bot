@@ -32,23 +32,23 @@
   },
 
   "risk": {
-    "risk_per_trade_pct": 0.01,
+    "risk_per_trade_pct": 0.005,
     "max_total_open_risk_pct": 0.025,
     "max_open_positions": 2,
     "max_same_direction_positions": 2,
     "correlation_threshold": 0.85,
     "hedge_corr_max": 0.6,
-    "daily_stop_pct": -0.04,
-    "weekly_stop_pct": -0.1,
+    "daily_stop_pct": -0.03,
+    "weekly_stop_pct": -0.07,
     "pause_days_after_weekly_stop": 7,
-    "reduced_risk_after_pause_pct": 0.005,
+    "reduced_risk_after_pause_pct": 0.0025,
     "reduced_risk_days": 3,
     "high_vol_risk_reduction_pct": 0.005,
     "cooldown_after_sl_bars": 0,
     "available_margin_ratio": 0.9,
     "max_margin_utilization": 0.85,
-    "min_stop_pct": 0.006,
-    "min_stop_usd": 150,
+    "min_stop_pct": 0.01,
+    "min_stop_usd": 100,
     "insufficient_margin_log_every_n": 20,
     "max_net_exposure_pct": 2.0,
     "max_single_symbol_exposure_pct": 1.0
@@ -80,7 +80,7 @@
       "regime_switch_cooldown_bars": 3
     },
     "trend_score": {
-      "adx_min": 18.0,
+      "adx_min": 22.0,
       "adx_max": 40.0,
       "adx_momentum_lookback": 10,
       "adx_momentum_min": -0.2,
@@ -94,7 +94,7 @@
       "weight_adx_momentum": 0.25,
       "weight_ema_slope": 0.25,
       "weight_ema_spread": 0.25,
-      "trend_min_threshold": 0.55
+      "trend_min_threshold": 0.6
     },
     "adaptive_regime": false,
     "adaptive_adx_window": 8640
@@ -103,12 +103,12 @@
   "strategies": {
     "trend_pullback": {
       "enabled": true,
-      "stop_pct": 0.01,
-      "target_r_multiple": 1.5,
-      "pullback_rsi_long_min": 40,
-      "pullback_rsi_long_max": 50,
-      "pullback_rsi_short_min": 50,
-      "pullback_rsi_short_max": 60,
+      "stop_pct": 0.02,
+      "target_r_multiple": 2.0,
+      "pullback_rsi_long_min": 35,
+      "pullback_rsi_long_max": 45,
+      "pullback_rsi_short_min": 55,
+      "pullback_rsi_short_max": 65,
       "ema20_band_pct": 0.002,
       "trail_after_r": 1.0,
       "atr_trail_mult": 2.0,
@@ -161,13 +161,13 @@
 
   "gates": {
     "cost_gate_enabled": true,
-    "min_net_edge_r": 0.0,
-    "min_edge_over_cost_mult": 2.0
+    "min_net_edge_r": 0.3,
+    "min_edge_over_cost_mult": 3.0
   },
 
   "cost_gate": {
-    "base_edge_r": 1.0,
-    "min_edge_over_cost_mult": 2.0,
+    "base_edge_r": 1.2,
+    "min_edge_over_cost_mult": 3.0,
     "estimated_entry_fee_pct": 0.0002,
     "estimated_exit_fee_pct": 0.0004,
     "estimated_slippage_pct": 0.0002,
@@ -190,7 +190,7 @@
 
   "time_filters": {
     "bad_hours": [],
-    "bad_weekdays": [],
+    "bad_weekdays": ["Thu"],
     "min_samples": 20,
     "avg_r_threshold": -0.2
   },
